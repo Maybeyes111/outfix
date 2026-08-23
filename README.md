@@ -14,22 +14,31 @@ Zero external dependencies. Stdlib only. Thread-safe. Never panics.
 
 ## ⚠️ Status: early & honest
 
-**This project is young and NOT battle-tested yet.**
+**This project works, but it is far from perfect.**
 
-- The test suite is built from *synthetic* samples modeled on common failure
-  patterns. It has **never been systematically tested against real outputs**
-  from problematic production models.
-- Heuristics can misfire. Unusual-but-valid content may get trimmed.
-- The public API may still change before v1.0.
+Real-world tested so far:
+
+| Model | Route | Result |
+|---|---|---|
+| DeepSeek V4 Pro | 9router (`xkiro/...`) | **8/8 prompts pass** (4 clean, 4 repaired) |
+| DeepSeek V4 Flash | 9router (`xkiro/...`) | **8/8 prompts pass** (5 clean, 3 repaired) |
+| Qwen 3.8 Max | 9router | *pending* — upstream returned 503 during testing |
+| GLM | — | not tested yet |
+
+Real failing outputs captured from those runs live in `testdata/live/` and are
+enforced as regression tests (`TestLiveCorpus`). Everything else is still
+synthetic. Heuristics can misfire on unusual-but-valid content, and the public
+API may change before v1.0.
 
 If you run this against a real model and something breaks (or cleans when it
 shouldn't), **please [open an issue](../../issues/new) with the raw input** —
 real-world failing samples are the single most valuable contribution right now.
 
-> Catatan (Bahasa Indonesia): proyek ini belum sempurna dan belum pernah diuji
-> ke model-model problematik secara nyata. Kalau kamu menemukan masalah atau
-> output aneh yang gagal dibersihkan, tolong laporkan ke issue ya — sangat
-> membantu. Terima kasih!
+> Catatan (Bahasa Indonesia): proyek ini belum sempurna. Sudah diuji ke
+> DeepSeek V4 (pro/flash) lewat 9router dengan hasil 16/16 pass, tapi Qwen
+> belum (provider lagi down saat pengujian) dan GLM belum sama sekali. Kalau
+> kamu menemukan output aneh yang gagal dibersihkan, tolong laporkan ke issue
+> ya — sangat membantu. Terima kasih!
 
 ---
 

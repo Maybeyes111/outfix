@@ -1,0 +1,1 @@
+{"name":"Aria Bennett","age":29,"hobbies":["painting","hiking","chess"],"active":true}

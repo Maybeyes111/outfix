@@ -59,7 +59,8 @@ func jsonRepair(src string, depth int, acts *[]RepairAction) string {
 				}
 			}
 		}
-		if strings.IndexByte(s, '\n') >= 0 || strings.IndexByte(s, ';') >= 0 {
+		if strings.IndexByte(s, '\n') >= 0 || strings.IndexByte(s, ';') >= 0 ||
+			strings.Contains(s, `\n`) {
 			if v, found := mergeNDJSON(s); found {
 				s = v
 				addAct(acts, ActionMergedNDJSON,
@@ -310,6 +311,10 @@ func mergeNDJSON(s string) (string, bool) {
 		}
 		if c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == ',' || c == ';' {
 			i++
+			continue
+		}
+		if c == '\\' && i+1 < len(s) && (s[i+1] == 'n' || s[i+1] == 't' || s[i+1] == 'r') {
+			i += 2
 			continue
 		}
 		return s, false

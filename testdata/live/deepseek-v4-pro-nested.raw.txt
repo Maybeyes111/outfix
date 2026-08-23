@@ -1,0 +1,26 @@
+{
+  "company": {
+    "employees": [
+      {
+        "name": "Alice Johnson",
+        "skills": ["JavaScript", "Project Management", "Data Analysis"],
+        "address": {
+          "city": "Seattle",
+          "zip": "98101"
+        }
+      },
+      {
+        "name": "Carlos Ramirez",
+        "skills": ["Python", "Cloud Architecture", "DevOps"],
+        "address": {
+          "city": "Austin",
+          "zip": "73301"
+        }
+      }
+    ],
+    "metadata": {
+      "version": "1.0.0",
+      "flags": ["active", "verified"]
+    }
+  }
+}

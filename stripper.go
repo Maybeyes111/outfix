@@ -397,6 +397,9 @@ func (st *stripper) stripTail(s string) string {
 		switch {
 		case tt[0] == '{' || tt[0] == '[':
 			return s
+		case tt[0] == '\\' && len(tt) > 2 && (tt[1] == 'n' || tt[1] == 't' || tt[1] == 'r') &&
+			strings.ContainsAny(tt[2:], "{["):
+			return s
 		case tt[0] == '<' && (len(tt) == 1 || tt[1] != '/'):
 			return s
 		case tt[0] == '<':

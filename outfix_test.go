@@ -1,7 +1,10 @@
 package outfix
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -536,6 +539,54 @@ func TestConcurrentUse(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
+}
+
+func TestLiteralEscapeNDJSON(t *testing.T) {
+	literalSep := `\` + "n"
+	in := `{"name": "Alice", "id": 1}` + literalSep + `{"name": "Bob", "id": 2}` + literalSep + `{"name": "Charlie", "id": 3}`
+	want := `[{"name": "Alice", "id": 1},{"name": "Bob", "id": 2},{"name": "Charlie", "id": 3}]`
+
+	out, err := Fix(in)
+	if err != nil {
+		t.Fatalf("literal-escape NDJSON must repair, err=%v in=%q", err, in)
+	}
+	if out != want {
+		t.Fatalf("got %q want %q", out, want)
+	}
+
+	single := `{"a": 1}` + literalSep + `{"b": 2}`
+	out2, err2 := Fix(single)
+	if err2 != nil || out2 != `[{"a": 1},{"b": 2}]` {
+		t.Fatalf("two-value variant: out=%q err=%v", out2, err2)
+	}
+}
+
+func TestLiveCorpus(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("testdata", "live", "*.raw.txt"))
+	if err != nil || len(files) == 0 {
+		t.Skipf("no live corpus files: %v", err)
+	}
+	p := defaultProc()
+	for _, f := range files {
+		raw, rerr := os.ReadFile(f)
+		if rerr != nil {
+			t.Fatalf("read %s: %v", f, rerr)
+		}
+		name := filepath.Base(f)
+		t.Run(name, func(t *testing.T) {
+			res, perr := p.Process(string(raw))
+			if perr != nil {
+				t.Fatalf("repair failed: %v\nraw=%q", perr, truncate(string(raw)))
+			}
+			out := strings.TrimSpace(res.Output)
+			if !json.Valid([]byte(out)) {
+				t.Fatalf("output not valid JSON: %q\nraw=%q", truncate(out), truncate(string(raw)))
+			}
+			if res.Confidence != 1.0 {
+				t.Fatalf("confidence=%v want 1.0", res.Confidence)
+			}
+		})
+	}
 }
 
 func runTable(t *testing.T, p *Processor, cases []tc) {

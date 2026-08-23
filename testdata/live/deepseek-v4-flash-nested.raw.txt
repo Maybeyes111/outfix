@@ -1,0 +1,1 @@
+{"company":{"employees":[{"name":"Alice Johnson","skills":["Python","Project Management","Data Analysis"],"address":{"city":"Austin","zip":"78701"}},{"name":"Marcus Chen","skills":["Java","Cloud Architecture","DevOps"],"address":{"city":"Seattle","zip":"98101"}}],"metadata":{"version":"1.2.3","flags":["active","verified"]}}}

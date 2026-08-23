@@ -1,0 +1,13 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "tags": ["production", "api", "v1", "public", "load-balanced"]
+  },
+  "database": {
+    "hosts": ["db1.internal:5432", "db2.internal:5432", "db3.internal:5432"],
+    "replica": "db-replica.internal:5432"
+  },
+  "cache": {
+    "ttl": 3600,
+    "levels": ["L

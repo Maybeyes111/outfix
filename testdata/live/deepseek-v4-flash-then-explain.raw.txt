@@ -1,0 +1,2 @@
+{"status": "ok", "code": 200}
+Status codes matter because they provide an immediate, standardized signal of whether a request succeeded, failed, or requires further action, enabling both clients and servers to handle responses predictably.
