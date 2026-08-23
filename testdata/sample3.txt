@@ -1,0 +1,5 @@
+<think>reasoning here</think>╭───┮
+│ result │
+╰───┯
+{"status": "ok", "html": "<b>done</b>"}
+Let me know if you need more!

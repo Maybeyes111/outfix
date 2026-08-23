@@ -1,0 +1,8 @@
+outfix.exe
+*.exe
+*.test
+*.out
+cpu.out
+*.md.utf8
+_project_utf8.md
+New Text Document.txt

@@ -1,0 +1,9 @@
+<think>
+Okay, the user wants the weather. I should call get_weather for Jakarta.
+Let me format the arguments correctly...
+</think>
+Sure! Here is the tool call:
+```json
+<tool_call>
+{"name": "get_weather", "arguments": {"city": "Jakarta", "units": 'metric', "days": 3,}}
+</tool_call>

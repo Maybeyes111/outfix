@@ -1,0 +1,6 @@
+def proses(data):
+    hasil = [x for x in data if x.valid]
+    return hasil
+</assistant_response>
+
+Semoga membantu! Jika butuh penjelasan tambahan, beri tahu saya.
