@@ -44,6 +44,7 @@ _TOOLWRAP_RE = re.compile(r"<\s*/?\s*(tool_call|tool_calls|function_call|functio
 _CHATTEMPLATE_RE = re.compile(r"<\|[a-zA-Z_]+\|>")
 _FUNC_CALL_FULL_RE = re.compile(r"^\s*[A-Za-z_]\w*(?:\.\w+)*\s*\((?s:.*)\)\s*$")
 _FUNC_CALL_ARGS_RE = re.compile(r"[A-Za-z_]\w*(?:\.\w+)*\s*\(")
+_WITH_LINES_RE = re.compile(r"(?m)^[A-Za-z_]\w*[ \t]+with[ \t]+[A-Za-z_][\w-]*[ \t]*=")
 _FUNC_CALL_DENYLIST = {"def", "print", "len", "range", "int", "str", "float",
                        "bool", "list", "dict", "set", "tuple", "open", "input",
                        "type", "super", "isinstance", "getattr", "setattr",
@@ -983,6 +984,180 @@ def _unwrap_stringified_json(s):
     return out, first_pos, True
 
 
+def _split_top_commas(s):
+    segs, depth, in_dq, in_sq, start = [], 0, False, False, 0
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if in_dq:
+            if c == "\\":
+                i += 1
+            elif c == '"':
+                in_dq = False
+        elif in_sq:
+            if c == "\\":
+                i += 1
+            elif c == "'":
+                in_sq = False
+        elif c == '"':
+            in_dq = True
+        elif c == "'":
+            in_sq = True
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif c == "," and depth == 0:
+            segs.append(s[start:i])
+            start = i + 1
+        i += 1
+    segs.append(s[start:])
+    return segs
+
+
+def _try_convert_object_arg_call(s, acts):
+    t = s.strip()
+    if not _FUNC_CALL_FULL_RE.match(t):
+        return s, False
+    open_idx = t.find("(")
+    name = t[:open_idx].strip()
+    if name.lower() in _FUNC_CALL_DENYLIST:
+        return s, False
+    body = t[open_idx + 1:t.rfind(")")].strip()
+    if len(body) < 2 or body[0] != "{" or body[-1] != "}" or not _valid_json(body):
+        return s, False
+    out = '{"name":' + _jstr(name) + ',"arguments":' + body + "}"
+    _act(acts, ACTION_CONVERTED_FUNCTION_CALL,
+         f"converted object-argument call {name}({{...}}) to tool-call JSON", 0)
+    return out, True
+
+
+def _scan_attr_call(t):
+    if len(t) < 3 or t[0] != "<":
+        return None
+    i = 1
+    start = i
+    while i < len(t) and (t[i].isascii() and (t[i].isalnum() or t[i] in "_-.")):
+        i += 1
+    name = t[start:i]
+    if not name:
+        return None
+    keys, vals = [], []
+    self_close = False
+    while True:
+        while i < len(t) and t[i] in " \t\r\n":
+            i += 1
+        if i >= len(t):
+            return None
+        if t[i] == "/":
+            i += 1
+            if i < len(t) and t[i] == ">":
+                self_close = True
+                i += 1
+                break
+            return None
+        if t[i] == ">":
+            i += 1
+            break
+        as_ = i
+        while i < len(t) and (t[i].isascii() and (t[i].isalnum() or t[i] in "_-.")):
+            i += 1
+        key = t[as_:i]
+        if not key or i >= len(t) or t[i] != "=":
+            return None
+        i += 1
+        if i >= len(t) or t[i] != '"':
+            return None
+        i += 1
+        vs = i
+        while i < len(t):
+            if t[i] == '"' and (i + 1 >= len(t) or t[i + 1] in " />"):
+                break
+            i += 1
+        if i >= len(t):
+            return None
+        keys.append(key)
+        vals.append(t[vs:i])
+        i += 1
+    rest = t[i:].strip()
+    if not self_close:
+        if rest != "</" + name + ">":
+            return None
+    elif rest:
+        return None
+    return name, keys, vals
+
+
+def _try_convert_xml_attr_call(s, acts):
+    parsed = _scan_attr_call(s.strip())
+    if parsed is None:
+        return s, False
+    name, keys, vals = parsed
+    if name.lower() in _FUNC_CALL_DENYLIST:
+        return s, False
+    parts = []
+    for k, v in zip(keys, vals):
+        jv = _convert_arg_value(v.strip())
+        if jv is None:
+            return s, False
+        parts.append(_jstr(k) + ":" + jv)
+    out = '{"name":' + _jstr(name) + ',"arguments":{' + ",".join(parts) + "}}"
+    if not _valid_json(out):
+        return s, False
+    _act(acts, ACTION_CONVERTED_FUNCTION_CALL,
+         f"converted XML-attribute tool call <{name}/> to JSON", 0)
+    return out, True
+
+
+def _try_convert_with_lines(s, acts):
+    t = s.strip()
+    calls = []
+    for ln in t.split("\n"):
+        ln = ln.strip()
+        if not ln:
+            continue
+        m = re.match(r"^([A-Za-z_]\w*)[ \t]+with[ \t]+(.+)$", ln)
+        if not m:
+            return s, False
+        calls.append((m.group(1), m.group(2).strip()))
+    if not calls:
+        return s, False
+
+    def build_one(name, kv):
+        if name.lower() in _FUNC_CALL_DENYLIST:
+            return None
+        parts = [_jstr(name)]
+        for seg in _split_top_commas(kv):
+            seg = seg.strip()
+            if not seg:
+                continue
+            eq = _top_level_eq_index(seg)
+            if eq < 0:
+                return None
+            key = seg[:eq].strip().strip("\"'")
+            if not key or not _valid_ident(key):
+                return None
+            jv = _convert_arg_value(seg[eq + 1:].strip())
+            if jv is None:
+                return None
+            parts.append(_jstr(key) + ":" + jv)
+        out = '{"name":' + parts[0] + ',"arguments":{' + ",".join(parts[1:]) + "}}"
+        return out if _valid_json(out) else None
+
+    outs = []
+    for name, kv in calls:
+        o = build_one(name, kv)
+        if o is None:
+            return s, False
+        outs.append(o)
+    out = outs[0] if len(outs) == 1 else "[" + ",".join(outs) + "]"
+    if not _valid_json(out):
+        return s, False
+    _act(acts, ACTION_CONVERTED_FUNCTION_CALL,
+         f"converted {len(outs)} prose-style call(s) to tool-call JSON", 0)
+    return out, True
+
+
 def strip_orphan_close_tags(s, acts):
     out, stack = [], []
     dropped, first_pos, i = 0, -1, 0
@@ -1127,6 +1302,7 @@ def _detect(raw):
     trimmed = raw.strip()
     full_call = bool(_FUNC_CALL_FULL_RE.match(trimmed))
     loose_call = (not full_call) and bool(_FUNC_CALL_ARGS_RE.search(raw))
+    with_lines = bool(_WITH_LINES_RE.search(raw))
     has_stringified = '"{' in raw
     has_tool = any(n in lower for n in ("<tool_call", "</tool_call",
                                         "<function_call", "</function_call"))
@@ -1153,7 +1329,8 @@ def _detect(raw):
     return dict(has_artifact=any([has_open_think, has_close_think, has_tool,
                                   has_tmpl, has_fence, has_box, has_cr,
                                   has_esc, has_preamble,
-                                  full_call, loose_call, has_stringified]),
+                                  full_call, loose_call, with_lines,
+                                  has_stringified]),
                 valid_json=valid, json_intent=json_intent,
                 xml_intent=xml_intent, malformed=malformed, guess=guess,
                 full_call=full_call)
@@ -1200,12 +1377,25 @@ def process(inp: str, opts: Options | None = None) -> Result:
         if opts.repair_json and (ft.startswith("{") or ft.startswith("[")):
             out = json_repair(out, max(1, min(opts.max_repair_depth, 3)), acts)
     else:
-        conv, ok = _try_convert_function_call(out.strip(), acts) \
-            if _FUNC_CALL_FULL_RE.match(out.strip()) else (out, False)
+        tstrip = out.strip()
+        converted = None
+        conv, ok = _try_convert_object_arg_call(tstrip, acts)
         if ok:
-            out = conv
-        elif _FUNC_CALL_ARGS_RE.search(out.strip()):
-            out = _extract_single_call_from_text(out, acts)
+            converted = conv
+        if converted is None:
+            conv, ok = _try_convert_function_call(tstrip, acts)
+            if ok:
+                converted = conv
+        if converted is None and _FUNC_CALL_ARGS_RE.search(tstrip):
+            out2 = _extract_single_call_from_text(out, acts)
+            if out2 != out:
+                converted = out2
+        if converted is None:
+            conv, ok = _try_convert_with_lines(out, acts)
+            if ok:
+                converted = conv
+        if converted is not None:
+            out = converted
         out = strip_orphan_close_tags(out, acts)
 
     out = normalize_output(out, acts)
@@ -1219,6 +1409,17 @@ def process(inp: str, opts: Options | None = None) -> Result:
     verified = (final.startswith(("{", "[")) and _valid_json(final))
     want_structured = (opts.target_format in (FORMAT_JSON, FORMAT_XML)) or \
                       final.startswith(("{", "[", "<"))
+    if want_structured and not verified:
+        conv, ok = (_try_convert_xml_attr_call(out.strip(), acts) if out.strip().startswith("<")
+                    else (None, False))
+        if not ok:
+            conv, ok = _try_convert_with_lines(out, acts)
+        if not ok:
+            conv, ok = _try_convert_object_arg_call(out.strip(), acts)
+        if ok and _valid_json(conv):
+            out = conv
+            final = out.strip()
+            verified = final.startswith(("{", "[")) and _valid_json(final)
     if want_structured and not verified:
         return Result(output=inp, cleaned=False, repairs=acts,
                       confidence=0.0, model_guess=guess,

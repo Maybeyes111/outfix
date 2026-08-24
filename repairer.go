@@ -783,6 +783,268 @@ func unwrapStringifiedJSON(s string) (string, int, bool) {
 	return out, firstPos, true
 }
 
+func tryConvertObjectArgCall(s string, acts *[]RepairAction) (string, bool) {
+	t := strings.TrimSpace(s)
+	if !funcCallFullRe.MatchString(t) {
+		return s, false
+	}
+	open := strings.IndexByte(t, '(')
+	name := strings.TrimSpace(t[:open])
+	if funcCallDenylist[strings.ToLower(name)] {
+		return s, false
+	}
+	close := strings.LastIndexByte(t, ')')
+	body := strings.TrimSpace(t[open+1 : close])
+	if len(body) < 2 || body[0] != '{' || body[len(body)-1] != '}' {
+		return s, false
+	}
+	if !json.Valid([]byte(body)) {
+		return s, false
+	}
+	out := fmt.Sprintf(`{"name":%s,"arguments":%s}`, mustJSONString(name), body)
+	addAct(acts, ActionConvertedFunctionCall,
+		fmt.Sprintf("converted object-argument call %s({...}) to tool-call JSON", name), 0)
+	return out, true
+}
+
+var xmlAttrRe = regexp.MustCompile(`([\w.-]+)="([^"]*)"`)
+
+func scanAttrCall(t string) (name string, keys []string, vals []string, selfClose bool, ok bool) {
+	if len(t) < 3 || t[0] != '<' {
+		return
+	}
+	i := 1
+	start := i
+	for i < len(t) && isTagNameByte(t[i]) {
+		i++
+	}
+	name = t[start:i]
+	if name == "" {
+		return "", nil, nil, false, false
+	}
+	bad := func() (string, []string, []string, bool, bool) {
+		return "", nil, nil, false, false
+	}
+	for {
+		for i < len(t) && (t[i] == ' ' || t[i] == '\t' || t[i] == '\r' || t[i] == '\n') {
+			i++
+		}
+		if i >= len(t) {
+			return bad()
+		}
+		if t[i] == '/' {
+			i++
+			if i < len(t) && t[i] == '>' {
+				selfClose = true
+				i++
+				break
+			}
+			return bad()
+		}
+		if t[i] == '>' {
+			i++
+			break
+		}
+		as := i
+		for i < len(t) && isTagNameByte(t[i]) {
+			i++
+		}
+		key := t[as:i]
+		if key == "" || i >= len(t) || t[i] != '=' {
+			return bad()
+		}
+		i++
+		if i >= len(t) || t[i] != '"' {
+			return bad()
+		}
+		i++
+		vs := i
+		for i < len(t) {
+			if t[i] == '"' && (i+1 >= len(t) || t[i+1] == ' ' || t[i+1] == '/' || t[i+1] == '>') {
+				break
+			}
+			i++
+		}
+		if i >= len(t) {
+			return bad()
+		}
+		keys = append(keys, key)
+		vals = append(vals, t[vs:i])
+		i++
+	}
+	rest := strings.TrimSpace(t[i:])
+	if !selfClose {
+		if rest != "</"+name+">" {
+			return bad()
+		}
+	} else if rest != "" {
+		return bad()
+	}
+	return name, keys, vals, selfClose, true
+}
+
+func tryConvertXMLAttrCall(s string, acts *[]RepairAction) (string, bool) {
+	name, keys, vals, _, ok := scanAttrCall(strings.TrimSpace(s))
+	if !ok || funcCallDenylist[strings.ToLower(name)] {
+		return s, false
+	}
+	var b strings.Builder
+	b.WriteString(`{"name":`)
+	b.Write(mustJSONString(name))
+	b.WriteString(`,"arguments":{`)
+	for i := 0; i < len(keys); i++ {
+		jv, jok := convertArgValue(strings.TrimSpace(vals[i]))
+		if !jok {
+			return s, false
+		}
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.Write(mustJSONString(keys[i]))
+		b.WriteByte(':')
+		b.WriteString(jv)
+	}
+	b.WriteString("}}")
+	out := b.String()
+	if !json.Valid([]byte(out)) {
+		return s, false
+	}
+	addAct(acts, ActionConvertedFunctionCall,
+		fmt.Sprintf("converted XML-attribute tool call <%s/> to JSON", name), 0)
+	return out, true
+}
+
+var withLineRe = regexp.MustCompile(`^([A-Za-z_]\w*)\s+with\s+(.+)$`)
+
+func tryConvertWithLines(s string, acts *[]RepairAction) (string, bool) {
+	t := strings.TrimSpace(s)
+	lines := strings.Split(t, "\n")
+	type pair struct {
+		name string
+		args string
+	}
+	var calls []pair
+	for _, ln := range lines {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		m := withLineRe.FindStringSubmatch(ln)
+		if m == nil {
+			return s, false
+		}
+		calls = append(calls, pair{strings.TrimSpace(m[1]), strings.TrimSpace(m[2])})
+	}
+	if len(calls) == 0 {
+		return s, false
+	}
+
+	buildOne := func(name, kv string) (string, bool) {
+		if funcCallDenylist[strings.ToLower(name)] {
+			return "", false
+		}
+		parts := []string{string(mustJSONString(name))}
+		for _, seg := range splitTopLevelCommas(kv) {
+			seg = strings.TrimSpace(seg)
+			if seg == "" {
+				continue
+			}
+			eq := top_level_eq_index(seg)
+			if eq < 0 {
+				return "", false
+			}
+			key := strings.Trim(strings.TrimSpace(seg[:eq]), `"'`)
+			if key == "" || !validIdent(key) {
+				return "", false
+			}
+			jv, ok := convertArgValue(strings.TrimSpace(seg[eq+1:]))
+			if !ok {
+				return "", false
+			}
+			parts = append(parts, string(mustJSONString(key))+":"+jv)
+		}
+		out := `{"name":` + parts[0] + `,"arguments":{` + strings.Join(parts[1:], ",") + `}}`
+		if !json.Valid([]byte(out)) {
+			return "", false
+		}
+		return out, true
+	}
+
+	var outs []string
+	for _, c := range calls {
+		o, ok := buildOne(c.name, c.args)
+		if !ok {
+			return s, false
+		}
+		outs = append(outs, o)
+	}
+	var out string
+	if len(outs) == 1 {
+		out = outs[0]
+	} else {
+		out = "[" + strings.Join(outs, ",") + "]"
+	}
+	if !json.Valid([]byte(out)) {
+		return s, false
+	}
+	addAct(acts, ActionConvertedFunctionCall,
+		fmt.Sprintf("converted %d prose-style call(s) to tool-call JSON", len(outs)), 0)
+	return out, true
+}
+
+func splitTopLevelCommas(s string) []string {
+	var segs []string
+	depth := 0
+	inDQ, inSQ := false, false
+	start := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case inDQ:
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				inDQ = false
+			}
+		case inSQ:
+			if c == '\\' {
+				i++
+			} else if c == '\'' {
+				inSQ = false
+			}
+		case c == '"':
+			inDQ = true
+		case c == '\'':
+			inSQ = true
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			depth--
+		case c == ',' && depth == 0:
+			segs = append(segs, s[start:i])
+			start = i + 1
+		}
+	}
+	segs = append(segs, s[start:])
+	return segs
+}
+
+func lastResortToolConvert(s string, acts *[]RepairAction) (string, bool) {
+	if v, ok := tryConvertXMLAttrCall(s, acts); ok {
+		return v, true
+	}
+	if v, ok := tryConvertWithLines(s, acts); ok {
+		return v, true
+	}
+	if v, ok := tryConvertObjectArgCall(strings.TrimSpace(s), acts); ok {
+		return v, true
+	}
+	if v, ok := tryConvertFunctionCall(strings.TrimSpace(s), acts); ok {
+		return v, true
+	}
+	return s, false
+}
+
 func extractSingleCallFromText(s string, acts *[]RepairAction) string {
 	t := strings.TrimSpace(s)
 	loc := funcCallArgsRe.FindStringIndex(t)

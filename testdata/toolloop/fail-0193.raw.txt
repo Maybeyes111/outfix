@@ -1,0 +1,1 @@
+create_ticket({"title": "hotfix", "tags": ["alert", "alert"], "urgent": true})

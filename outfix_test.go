@@ -614,6 +614,51 @@ func TestAggressiveParamFixes(t *testing.T) {
 	}
 }
 
+func TestRealToolLoopCorpus(t *testing.T) {
+	cases := []struct{ file, want string }{
+		{"object-arg.txt", `{"name":"get_weather","arguments":{"units": "imperial", "days": 30, "city": "Tokyo"}}`},
+		{"object-arg2.txt", `{"name":"book_hotel","arguments":{"city": "Berlin", "nights": 5, "rating": 4.8}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.file, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("testdata", "xmlcall", c.file))
+			if err != nil {
+				t.Skipf("missing: %v", err)
+			}
+			res, perr := defaultProc().Process(string(raw))
+			if perr != nil {
+				t.Fatalf("err=%v repairs=%+v", perr, res.Repairs)
+			}
+			if strings.TrimSpace(res.Output) != strings.TrimSpace(c.want) {
+				t.Fatalf("got %q", res.Output)
+			}
+		})
+	}
+}
+
+func TestXMLAttrAndWithLines(t *testing.T) {
+	res, err := defaultProc().Process(`<create_ticket tags="["alert","alert"]" urgent="false" title="weekly-report"/>`)
+	if err != nil || !strings.Contains(res.Output, `"name":"create_ticket"`) {
+		t.Fatalf("xml attrs: out=%q err=%v", res.Output, err)
+	}
+	var obj map[string]any
+	json.Unmarshal([]byte(res.Output), &obj)
+	args, _ := obj["arguments"].(map[string]any)
+	if args["urgent"] != false || args["title"] != "weekly-report" {
+		t.Fatalf("args=%+v", args)
+	}
+
+	raw, _ := os.ReadFile(filepath.Join("testdata", "xmlcall", "with-lines.txt"))
+	res3, err3 := defaultProc().Process(string(raw))
+	if err3 != nil || !strings.HasPrefix(strings.TrimSpace(res3.Output), "[") {
+		t.Fatalf("with-lines: out=%q err=%v", res3.Output, err3)
+	}
+	var arr []map[string]any
+	if e := json.Unmarshal([]byte(res3.Output), &arr); e != nil || len(arr) != 2 {
+		t.Fatalf("arr=%q e=%v", res3.Output, e)
+	}
+}
+
 func TestLiteralEscapeNDJSON(t *testing.T) {
 	literalSep := `\` + "n"
 	in := `{"name": "Alice", "id": 1}` + literalSep + `{"name": "Bob", "id": 2}` + literalSep + `{"name": "Charlie", "id": 3}`

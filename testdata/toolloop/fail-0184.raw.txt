@@ -1,0 +1,2 @@
+book_hotel with city="Surabaya", nights=30, rating=1.7
+get_weather with city="Bandung", units="metric", days=3

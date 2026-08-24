@@ -11,6 +11,7 @@ type artifactReport struct {
 	hasCloseThink    bool
 	hasFuncCall      bool
 	hasLooseCall     bool
+	hasWithLines     bool
 	hasStringified   bool
 	hasToolWrapper   bool
 	hasTemplateBleed bool
@@ -34,6 +35,8 @@ var funcCallFullRe = regexp.MustCompile(`^\s*[A-Za-z_]\w*(?:\.\w+)*\s*\((?s:.*)\
 
 var funcCallArgsRe = regexp.MustCompile(`[A-Za-z_]\w*(?:\.\w+)*\s*\(`)
 
+var withLinesRe = regexp.MustCompile(`(?m)^[A-Za-z_]\w*[ \t]+with[ \t]+[A-Za-z_][\w-]*[ \t]*=`)
+
 func detect(raw string) artifactReport {
 	var rep artifactReport
 	if raw == "" {
@@ -45,6 +48,7 @@ func detect(raw string) artifactReport {
 	rep.hasFuncCall = funcCallFullRe.MatchString(strings.TrimSpace(raw))
 	hasLoose := funcCallArgsRe.MatchString(raw)
 	rep.hasLooseCall = hasLoose && !rep.hasFuncCall
+	rep.hasWithLines = withLinesRe.MatchString(raw)
 	rep.hasStringified = strings.Contains(raw, `"{`)
 	rep.hasToolWrapper = containsAny(lower, "<tool_call", "</tool_call", "<function_call", "</function_call")
 	rep.hasTemplateBleed = strings.Contains(lower, "<|")

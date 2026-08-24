@@ -37,6 +37,7 @@ const TOOLWRAP_RE = /<\s*\/?\s*(tool_call|tool_calls|function_call|function_call
 const CHATTEMPLATE_RE = /<\|[a-zA-Z_]+\|>/g;
 const FUNCCALL_FULL_RE = /^\s*[A-Za-z_]\w*(?:\.\w+)*\s*\((?s:[\S\s]*)\)\s*$/;
 const FUNCCALL_ARGS_RE = /[A-Za-z_]\w*(?:\.\w+)*\s*\(/;
+const WITH_LINES_RE = /^[A-Za-z_]\w*[ \t]+with[ \t]+[A-Za-z_][\w-]*[ \t]*=/m;
 const FUNCCALL_DENYLIST = new Set(["def", "print", "len", "range", "int", "str",
   "float", "bool", "list", "dict", "set", "tuple", "open", "input", "type",
   "super", "isinstance", "getattr", "setattr", "if", "for", "while", "return",
@@ -642,6 +643,143 @@ export function tryConvertFunctionCall(s, acts) {
   return [out, true];
 }
 
+export function tryConvertObjectArgCall(s, acts) {
+  const t = s.trim();
+  if (!FUNCCALL_FULL_RE.test(t)) return [s, false];
+  const openIdx = t.indexOf("(");
+  const name = t.slice(0, openIdx).trim();
+  if (FUNCCALL_DENYLIST.has(name.toLowerCase())) return [s, false];
+  const body = t.slice(openIdx + 1, t.lastIndexOf(")")).trim();
+  if (body.length < 2 || body[0] !== "{" || body[body.length - 1] !== "}" || !validJson(body))
+    return [s, false];
+  const out = '{"name":' + jstr(name) + ',"arguments":' + body + "}";
+  act(acts, ACTION.CONVERTED_FUNCTION_CALL,
+    `converted object-argument call ${name}({...}) to tool-call JSON`, 0);
+  return [out, true];
+}
+
+function scanAttrCall(t) {
+  if (t.length < 3 || t[0] !== "<") return null;
+  let i = 1;
+  const start = i;
+  while (i < t.length && /[A-Za-z0-9_.\-]/.test(t[i])) i++;
+  const name = t.slice(start, i);
+  if (!name) return null;
+  const keys = [], vals = [];
+  let selfClose = false;
+  while (true) {
+    while (i < t.length && " \t\r\n".includes(t[i])) i++;
+    if (i >= t.length) return null;
+    if (t[i] === "/") {
+      i++;
+      if (i < t.length && t[i] === ">") { selfClose = true; i++; break; }
+      return null;
+    }
+    if (t[i] === ">") { i++; break; }
+    const as = i;
+    while (i < t.length && /[A-Za-z0-9_.\-]/.test(t[i])) i++;
+    const key = t.slice(as, i);
+    if (!key || i >= t.length || t[i] !== "=") return null;
+    i++;
+    if (i >= t.length || t[i] !== '"') return null;
+    i++;
+    const vs = i;
+    while (i < t.length) {
+      if (t[i] === '"' && (i + 1 >= t.length || " />".includes(t[i + 1]))) break;
+      i++;
+    }
+    if (i >= t.length) return null;
+    keys.push(key);
+    vals.push(t.slice(vs, i));
+    i++;
+  }
+  const rest = t.slice(i).trim();
+  if (!selfClose) {
+    if (rest !== "</" + name + ">") return null;
+  } else if (rest) return null;
+  return { name, keys, vals };
+}
+
+export function tryConvertXMLAttrCall(s, acts) {
+  const parsed = scanAttrCall(s.trim());
+  if (!parsed) return [s, false];
+  const { name, keys, vals } = parsed;
+  if (FUNCCALL_DENYLIST.has(name.toLowerCase())) return [s, false];
+  const parts = [];
+  for (let i = 0; i < keys.length; i++) {
+    const jv = convertArgValue(vals[i].trim());
+    if (jv === null) return [s, false];
+    parts.push(jstr(keys[i]) + ":" + jv);
+  }
+  const out = '{"name":' + jstr(name) + ',"arguments":{' + parts.join(",") + "}}";
+  if (!validJson(out)) return [s, false];
+  act(acts, ACTION.CONVERTED_FUNCTION_CALL,
+    `converted XML-attribute tool call <${name}/> to JSON`, 0);
+  return [out, true];
+}
+
+function splitTopCommas(s) {
+  const segs = [];
+  let depth = 0, inDQ = false, inSQ = false, start = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inDQ) {
+      if (c === "\\") i++;
+      else if (c === '"') inDQ = false;
+    } else if (inSQ) {
+      if (c === "\\") i++;
+      else if (c === "'") inSQ = false;
+    } else if (c === '"') inDQ = true;
+    else if (c === "'") inSQ = true;
+    else if ("([{".includes(c)) depth++;
+    else if (")]}" .includes(c)) depth--;
+    else if (c === "," && depth === 0) { segs.push(s.slice(start, i)); start = i + 1; }
+  }
+  segs.push(s.slice(start));
+  return segs;
+}
+
+export function tryConvertWithLines(s, acts) {
+  const t = s.trim();
+  const calls = [];
+  for (let ln of t.split("\n")) {
+    ln = ln.trim();
+    if (!ln) continue;
+    const m = ln.match(/^([A-Za-z_]\w*)[ \t]+with[ \t]+(.+)$/);
+    if (!m) return [s, false];
+    calls.push([m[1], m[2].trim()]);
+  }
+  if (!calls.length) return [s, false];
+  const buildOne = (name, kv) => {
+    if (FUNCCALL_DENYLIST.has(name.toLowerCase())) return null;
+    const parts = [jstr(name)];
+    for (let seg of splitTopCommas(kv)) {
+      seg = seg.trim();
+      if (!seg) continue;
+      const eq = topEqIndex(seg);
+      if (eq < 0) return null;
+      const key = seg.slice(0, eq).trim().replace(/^["']|["']$/g, "");
+      if (!key || !validIdent(key)) return null;
+      const jv = convertArgValue(seg.slice(eq + 1).trim());
+      if (jv === null) return null;
+      parts.push(jstr(key) + ":" + jv);
+    }
+    const out = '{"name":' + parts[0] + ',"arguments":{' + parts.slice(1).join(",") + "}}";
+    return validJson(out) ? out : null;
+  };
+  const outs = [];
+  for (const [name, kv] of calls) {
+    const o = buildOne(name, kv);
+    if (o === null) return [s, false];
+    outs.push(o);
+  }
+  const out = outs.length === 1 ? outs[0] : "[" + outs.join(",") + "]";
+  if (!validJson(out)) return [s, false];
+  act(acts, ACTION.CONVERTED_FUNCTION_CALL,
+    `converted ${outs.length} prose-style call(s) to tool-call JSON`, 0);
+  return [out, true];
+}
+
 export function extractSingleCallFromText(s, acts) {
   const t = s.trim();
   const loc = FUNCCALL_ARGS_RE.exec(t);
@@ -923,9 +1061,10 @@ function detect(raw) {
   const lower = raw.toLowerCase();
   const hasOpenThink = ["<think", "<reasoning", "<reflection"].some((n) => lower.includes(n));
   const hasCloseThink = ["</think", "</reasoning", "</reflection"].some((n) => lower.includes(n));
-  const trimmed = raw.trim();
-  const fullCall = FUNCCALL_FULL_RE.test(trimmed);
+  const trimmedRaw = raw.trim();
+  const fullCall = FUNCCALL_FULL_RE.test(trimmedRaw);
   const looseCall = !fullCall && FUNCCALL_ARGS_RE.test(raw);
+  const withLines = WITH_LINES_RE.test(raw);
   const hasStringified = raw.includes('"{');
   const hasTool = ["<tool_call", "</tool_call", "<function_call", "</function_call"].some((n) => lower.includes(n));
   const hasTmpl = lower.includes("<|");
@@ -952,7 +1091,7 @@ function detect(raw) {
   return {
     artifact: hasOpenThink || hasCloseThink || hasTool || hasTmpl || hasFence ||
       hasBox || hasCr || hasEsc || hasPreamble || fullCall || looseCall ||
-      hasStringified,
+      withLines || hasStringified,
     validJson: validJ, jsonIntent, xmlIntent,
     malformed: malformed, guess, fullCall,
   };
@@ -999,19 +1138,30 @@ export function process(input, opts = new Options()) {
       out = jsonRepair(out, depth, acts);
     }
   } else {
-    if (FUNCCALL_FULL_RE.test(out.trim())) {
-      const [conv, ok] = tryConvertFunctionCall(out.trim(), acts);
-      if (ok) out = conv;
+    const tstrip = out.trim();
+    let converted = null;
+    {
+      const [v, ok] = tryConvertObjectArgCall(tstrip, acts);
+      if (ok) converted = v;
     }
-    if (!acts.some((a) => a.type === ACTION.CONVERTED_FUNCTION_CALL) &&
-        FUNCCALL_ARGS_RE.test(out.trim())) {
-      out = extractSingleCallFromText(out, acts);
+    if (converted === null) {
+      const [v, ok] = tryConvertFunctionCall(tstrip, acts);
+      if (ok) converted = v;
     }
+    if (converted === null && FUNCCALL_ARGS_RE.test(tstrip)) {
+      const out2 = extractSingleCallFromText(out, acts);
+      if (out2 !== out) converted = out2;
+    }
+    if (converted === null) {
+      const [v, ok] = tryConvertWithLines(out, acts);
+      if (ok) converted = v;
+    }
+    if (converted !== null) out = converted;
     out = stripOrphanCloseTags(out, acts);
   }
 
   out = normalizeOutput(out, acts);
-  const final = out.trim();
+  let final = out.trim();
 
   if (!final && input.trim()) {
     return new Result({
@@ -1020,11 +1170,25 @@ export function process(input, opts = new Options()) {
     });
   }
 
-  const verified =
+  let verified =
     ((final.startsWith("{") || final.startsWith("[")) && validJson(final));
   const wantStructured = opts.targetFormat === Format.JSON ||
     opts.targetFormat === Format.XML ||
     final.startsWith("{") || final.startsWith("[") || final.startsWith("<");
+
+  if (wantStructured && !verified) {
+    let conv = null, ok = false;
+    if (final.startsWith("<")) {
+      [conv, ok] = tryConvertXMLAttrCall(out.trim(), acts);
+    }
+    if (!ok) [conv, ok] = tryConvertWithLines(out, acts);
+    if (!ok) [conv, ok] = tryConvertObjectArgCall(out.trim(), acts);
+    if (ok && validJson(conv)) {
+      out = conv;
+      final = out.trim();
+      verified = (final.startsWith("{") || final.startsWith("[")) && validJson(final);
+    }
+  }
 
   if (wantStructured && !verified) {
     return new Result({

@@ -1,0 +1,1 @@
+book_hotel({"city": "Berlin", "nights": 21, "rating": 4.1})

@@ -77,10 +77,14 @@ func (p *Processor) Process(input string) (res Result, err error) {
 			out = xmlRepair(out, &acts)
 		}
 	} else {
-		if conv, ok := tryConvertFunctionCall(out, &acts); ok {
+		if conv, ok := tryConvertObjectArgCall(out, &acts); ok {
+			out = conv
+		} else if conv, ok := tryConvertFunctionCall(out, &acts); ok {
 			out = conv
 		} else if funcCallArgsRe.MatchString(strings.TrimSpace(out)) {
 			out = extractSingleCallFromText(out, &acts)
+		} else if conv, ok := tryConvertWithLines(out, &acts); ok {
+			out = conv
 		}
 		out = stripOrphanCloseTags(out, &acts)
 	}
@@ -110,6 +114,15 @@ func (p *Processor) Process(input string) (res Result, err error) {
 		wantStructured = strings.HasPrefix(final, "{") ||
 			strings.HasPrefix(final, "[") ||
 			strings.HasPrefix(final, "<")
+	}
+
+	if wantStructured && !verified {
+		if conv, ok := lastResortToolConvert(out, &acts); ok && json.Valid([]byte(conv)) {
+			out = conv
+			final = strings.TrimSpace(out)
+			verified = (strings.HasPrefix(final, "{") || strings.HasPrefix(final, "[")) &&
+				json.Valid([]byte(final))
+		}
 	}
 
 	if wantStructured && !verified {
@@ -146,7 +159,7 @@ func (p *Processor) fastPath(rep artifactReport, input string) bool {
 			return false
 		}
 	}
-	if rep.hasOpenThink || rep.hasCloseThink || rep.hasFuncCall || rep.hasLooseCall || rep.hasStringified ||
+	if rep.hasOpenThink || rep.hasCloseThink || rep.hasFuncCall || rep.hasLooseCall || rep.hasWithLines || rep.hasStringified ||
 		rep.hasToolWrapper || rep.hasTemplateBleed || rep.hasCodeFence || rep.hasBoxDrawing ||
 		rep.hasPreamble || rep.hasTail || rep.malformedJSON || rep.hasUnicodeEsc || rep.hasCR {
 		return false

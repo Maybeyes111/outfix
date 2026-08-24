@@ -172,7 +172,9 @@ json.Unmarshal([]byte(res.Output), &v)
 | Bare keys | `{name: "x"}` | `quoted_bare_keys` |
 | Truncated JSON | `{"items": [1, 2` | `repaired_truncated_json` |
 | NDJSON | two objects on two lines | `merged_ndjson` |
-| Function-call written as code | `get_weather(city="X")` instead of a tool call | `converted_function_call` |
+| Function-call written as code | `get_weather(city="X")` / `get_weather({...})` | `converted_function_call` |
+| XML-attribute tool call | `<create_ticket title="x" urgent="false"/>` | `converted_function_call` |
+| Prose-style calls | `book_hotel with city="X", nights=2` (one per line → array) | `converted_function_call` |
 | Wrong param types | `{city: Jakarta}` bare values | `quoted_bare_values` (depth 3) |
 | Stringified JSON args | `"arguments": "{...}"` as string | `unwrapped_stringified_json` (depth 3) |
 | Unicode escapes | `\u003c` → `<` | `normalized_unicode_escapes` |

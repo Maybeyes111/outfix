@@ -141,6 +141,31 @@ test("stringified json unwrapped at depth 3", () => {
   assert.equal(parsed.n, 1);
 });
 
+test("real object-arg call", () => {
+  const parsed = JSON.parse(fix('get_weather({"units": "imperial", "days": 30, "city": "Tokyo"})'));
+  assert.equal(parsed.name, "get_weather");
+  assert.equal(parsed.arguments.city, "Tokyo");
+});
+
+test("real xml attr call", () => {
+  const raw = '<create_ticket tags="["alert","alert"]" urgent="false" title="weekly-report"/>';
+  const res = process(raw);
+  assert.equal(res.error, null);
+  const parsed = JSON.parse(res.output);
+  assert.equal(parsed.name, "create_ticket");
+  assert.equal(parsed.arguments.urgent, false);
+  assert.equal(parsed.arguments.title, "weekly-report");
+});
+
+test("real with-lines calls", () => {
+  const raw = 'book_hotel with city="Surabaya", nights=30, rating=1.7\n' +
+    'get_weather with city="Bandung", units="metric", days=3';
+  const arr = JSON.parse(process(raw).output);
+  assert.equal(arr.length, 2);
+  assert.equal(arr[0].name, "book_hotel");
+  assert.equal(arr[1].name, "get_weather");
+});
+
 test("live corpus all valid json", () => {
   const base = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testdata", "live");
   let files;

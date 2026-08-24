@@ -1,0 +1,2 @@
+book_hotel with city="Tokyo", nights=24, rating=3.3
+get_weather with city="Jakarta", units="metric", days=13

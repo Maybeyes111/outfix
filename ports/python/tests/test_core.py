@@ -132,6 +132,30 @@ class SpecCases(unittest.TestCase):
         self.assertEqual(parsed["arguments"]["city"], "Jakarta")
         self.assertEqual(parsed["n"], 1)
 
+    def test_real_object_arg_call(self):
+        out = fix('get_weather({"units": "imperial", "days": 30, "city": "Tokyo"})')
+        parsed = json.loads(out)
+        self.assertEqual(parsed["name"], "get_weather")
+        self.assertEqual(parsed["arguments"]["city"], "Tokyo")
+
+    def test_real_xml_attr_call(self):
+        raw = '<create_ticket tags="["alert","alert"]" urgent="false" title="weekly-report"/>'
+        res = process(raw)
+        self.assertIsNone(res.error)
+        parsed = json.loads(res.output)
+        self.assertEqual(parsed["name"], "create_ticket")
+        self.assertEqual(parsed["arguments"]["urgent"], False)
+        self.assertEqual(parsed["arguments"]["title"], "weekly-report")
+
+    def test_real_with_lines(self):
+        raw = ('book_hotel with city="Surabaya", nights=30, rating=1.7\n'
+               'get_weather with city="Bandung", units="metric", days=3')
+        res = process(raw)
+        arr = json.loads(res.output)
+        self.assertEqual(len(arr), 2)
+        self.assertEqual(arr[0]["name"], "book_hotel")
+        self.assertEqual(arr[1]["name"], "get_weather")
+
 
 class LiveCorpus(unittest.TestCase):
     def test_corpus(self):

@@ -1,0 +1,27 @@
+[   CLEAN] 0000 deepseek-v4-flash      finish=stop    conf=1.00
+[   CLEAN] 0001 deepseek-v4-pro        finish=stop    conf=1.00
+[REPAIRED] 0002 qwen3.8-max            finish=stop    conf=1.00
+[   CLEAN] 0003 deepseek-v4-flash      finish=stop    conf=1.00
+[REPAIRED] 0004 deepseek-v4-pro        finish=stop    conf=1.00
+[REPAIRED] 0005 qwen3.8-max            finish=stop    conf=1.00
+[REPAIRED] 0006 deepseek-v4-flash      finish=stop    conf=1.00
+[   CLEAN] 0007 deepseek-v4-pro        finish=stop    conf=1.00
+[REPAIRED] 0008 qwen3.8-max            finish=stop    conf=1.00
+[   CLEAN] 0009 deepseek-v4-flash      finish=stop    conf=1.00
+[REPAIRED] 0010 deepseek-v4-pro        finish=stop    conf=1.00
+[REPAIRED] 0011 qwen3.8-max            finish=stop    conf=1.00
+[   CLEAN] 0012 deepseek-v4-flash      finish=stop    conf=1.00
+[REPAIRED] 0013 deepseek-v4-pro        finish=stop    conf=1.00
+[REPAIRED] 0014 qwen3.8-max            finish=stop    conf=1.00
+[   CLEAN] 0015 deepseek-v4-flash      finish=stop    conf=1.00
+[REPAIRED] 0016 deepseek-v4-pro        finish=stop    conf=1.00
+[REPAIRED] 0017 qwen3.8-max            finish=stop    conf=1.00
+[   CLEAN] 0018 deepseek-v4-flash      finish=stop    conf=1.00
+[   CLEAN] 0019 deepseek-v4-pro        finish=stop    conf=1.00
+[REPAIRED] 0020 qwen3.8-max            finish=stop    conf=1.00
+[   CLEAN] 0021 deepseek-v4-flash      finish=stop    conf=1.00
+[REPAIRED] 0022 deepseek-v4-pro        finish=stop    conf=1.00
+[REPAIRED] 0023 qwen3.8-max            finish=stop    conf=1.00
+==== DONE in 1m44s ====
+stats: map[clean:10 repaired:14]
+NO FAILURES
