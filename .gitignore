@@ -10,3 +10,6 @@ __pycache__/
 *.pyc
 node_modules/
 PROJECT.MD
+testdata/radical/
+livecheck.exe
+radical.exe

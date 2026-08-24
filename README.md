@@ -222,6 +222,26 @@ Failing raw outputs (as issue reports or test cases) are worth more than code
 right now. If you contribute code, keep the zero-dependency rule and add
 table-driven tests.
 
+## Radical fuzzing (the dumbest AI we could build)
+
+`chaos/` contains a hand-written x86-64 assembly garbage generator
+(xorshift64* PRNG + raw binary character tables) that emits maximally
+polluted "LLM" output. `cmd/radical-ai` feeds 50,000 of those through the
+pipeline and enforces hard invariants:
+
+- never panics (zero escaped panics across the full run)
+- output is never empty for non-empty input; failures return the original
+- `Confidence == 1.0` implies byte-verified valid JSON
+
+The same corpus is replayed through the Python and JavaScript ports — all
+three implementations must produce **byte-identical** output:
+
+```bash
+go run ./cmd/radical-ai -n 50000        # invariants + corpus generation
+python ports/python/radical_check.py    # python: 300/300 identical to Go
+node ports/javascript/radical_check.mjs # js:      300/300 identical to Go
+```
+
 ## License
 
 [MIT](LICENSE)
