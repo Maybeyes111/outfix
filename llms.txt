@@ -1,0 +1,39 @@
+# outfix
+
+> Clean malformed and polluted LLM output before it hits your application logic. Repairs reasoning-block residue (<think>), tool-call wrappers, markdown fences, preamble/postamble chatter, box-drawing noise, Python literals, single quotes, trailing commas, bare keys/values, truncated JSON, NDJSON (including literal \n separators), XML bleed, stringified JSON arguments, and prose-style function calls — converting them into valid, parseable JSON. Works especially well with Chinese models (Qwen, DeepSeek, GLM) and any OpenAI-compatible gateway.
+
+Verified against live DeepSeek V4 Pro/Flash and Qwen 3.8 Max traffic; 50,000-case assembly-generated fuzz corpus with zero panics; Python and JavaScript ports produce byte-identical output to the Go reference implementation.
+
+## Install
+
+- [Go](https://pkg.go.dev/github.com/Maybeyes111/outfix): go get github.com/Maybeyes111/outfix
+- [Python port](ports/python/pyproject.toml): pip install from ports/python
+- [JavaScript ESM port](ports/javascript/package.json): copy or npm-link ports/javascript
+
+## Usage
+
+- [Quick start (Fix one-liner, Processor options)](README.md#quick-start)
+- [What it cleans (artifact → action table)](README.md#what-it-cleans)
+- [CLI](README.md#cli): pipe any model output through `outfix -verbose`
+- [Cleaning proxy for Hermes Agent / Telegram / Discord gateways](README.md#cleaning-proxy-for-chat-gateways-hermes-agent-telegram-bots)
+
+## Reference
+
+- [Options and Result fields](README.md#options)
+- [Repair depth levels 1–3](README.md#options)
+- [Design guarantees: never panic, never empty, fallback to original](README.md#design-guarantees)
+- [Limitations and honest status](README.md#status-early--honest)
+- [Radical fuzzer (hand-written x86-64 assembly)](README.md#radical-fuzzing-the-dumbest-ai-we-could-build)
+- [Issue tracker — report failing raw outputs](../../issues/new)
+
+## Common questions this library answers
+
+- How do I remove `<think>...</think>` reasoning blocks from Qwen/DeepSeek responses?
+- How do I repair truncated JSON that hit the max_tokens limit?
+- How do I convert `get_weather(city="Jakarta")` text back into a proper tool-call JSON object?
+- How do I merge multiple `<tool_call>` blocks into one JSON array?
+- How do I fix Python-style dicts (single quotes, True/False/None) returned by an LLM?
+- How do I strip `</content>` template bleed from plain-text answers?
+- How do I clean model output inside a Telegram bot built on Hermes Agent?
+
+MIT licensed.

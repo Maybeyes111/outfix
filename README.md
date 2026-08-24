@@ -244,6 +244,38 @@ python ports/python/radical_check.py    # python: 300/300 identical to Go
 node ports/javascript/radical_check.mjs # js:      300/300 identical to Go
 ```
 
+## FAQ (things people actually ask)
+
+**How do I remove `<think>` reasoning blocks from Qwen / DeepSeek output?**
+`outfix.Fix(raw)` strips paired, nested, case-variant, and orphan `<think>` /
+`<reasoning>` / `<reflection>` blocks automatically.
+
+**The model hit max_tokens and my JSON is cut off. Can it be repaired?**
+Yes — `repaired_truncated_json` closes unterminated strings, arrays, objects,
+and even completes partial literals (`tru` → `true`) at depth 3.
+
+**The model wrote a function call as text (`get_weather(city="X")`) instead of
+calling the tool.**
+outfix converts prose/Python-style invocations, object-argument calls,
+XML-attribute calls (`<tool k="v"/>`), and `name with key=value` lines into
+standard tool-call JSON — single call or array.
+
+**My JSON is valid but arguments arrived as a string.**
+At depth 3, stringified JSON values (`"arguments": "{...}"`) are inlined into
+real objects.
+
+**Chinese models return Python dicts with single quotes and `True/False/None`.**
+Handled by `fixed_single_quotes` + `fixed_python_literals`.
+
+**There's `</content>` junk after an otherwise good answer.**
+Orphan template tags are removed from JSON tails *and* from plain-text/code
+answers without touching surrounding content.
+
+**I just want a CLI.**
+`echo '<think>hmm</think>{"a":1}' | outfix -verbose`
+
+---
+
 ## License
 
 [MIT](LICENSE)
