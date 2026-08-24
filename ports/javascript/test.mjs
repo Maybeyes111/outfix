@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fix, process, Options, Format } from "./outfix.mjs";
+import { fix, process, Session, Options, Format } from "./outfix.mjs";
 
 test("orphan close think tag", () => {
   assert.equal(fix('</think>\nHere is your JSON:\n{"result": 42}'), '{"result": 42}');
@@ -164,6 +164,22 @@ test("real with-lines calls", () => {
   assert.equal(arr.length, 2);
   assert.equal(arr[0].name, "book_hotel");
   assert.equal(arr[1].name, "get_weather");
+});
+
+test("session role-aware multi-turn", () => {
+  const s = new Session();
+  const r1 = s.processTurn("user", "apa itu <think> tag? jawab singkat");
+  assert.equal(r1.output, "apa itu <think> tag? jawab singkat");
+  const r2 = s.processTurn(
+    "assistant",
+    "<think>\nThe user wants a one-liner about the think tag, so I will keep it plain.\n</think>\nIt marks hidden reasoning."
+  );
+  assert.ok(!r2.output.includes("<think>"));
+  assert.ok(r2.output.includes("hidden reasoning"));
+  const r3 = s.processTurn("tool", '{"a":1}\r\n');
+  assert.equal(r3.output, '{"a":1}');
+  assert.equal(s.turns().length, 3);
+  assert.equal(s.turns()[1].cleaned, true);
 });
 
 test("live corpus all valid json", () => {

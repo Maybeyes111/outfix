@@ -35,5 +35,6 @@ Verified against live DeepSeek V4 Pro/Flash and Qwen 3.8 Max traffic; 50,000-cas
 - How do I fix Python-style dicts (single quotes, True/False/None) returned by an LLM?
 - How do I strip `</content>` template bleed from plain-text answers?
 - How do I clean model output inside a Telegram bot built on Hermes Agent?
+- How do I clean assistant messages safely in a multi-turn agent loop without corrupting user or tool messages?
 
 MIT licensed.

@@ -1429,6 +1429,67 @@ def process(inp: str, opts: Options | None = None) -> Result:
                   confidence=1.0 if verified else 0.0, model_guess=guess)
 
 
+class TurnRecord:
+    def __init__(self, index, role, input_len, output_len, cleaned, actions, error):
+        self.index = index
+        self.role = role
+        self.input_len = input_len
+        self.output_len = output_len
+        self.cleaned = cleaned
+        self.actions = actions
+        self.error = error
+
+    def __repr__(self):
+        return (f"TurnRecord(#{self.index} {self.role} in={self.input_len} "
+                f"out={self.output_len} cleaned={self.cleaned} err={self.error})")
+
+
+class Session:
+    """Role-aware multi-turn wrapper.
+
+    assistant/model turns get the full cleaning pipeline; user/system/tool/
+    human turns only receive conservative normalization so literal questions
+    like "what does <think> mean?" are never mangled.
+    """
+
+    def __init__(self, opts: Options | None = None):
+        import threading
+        self._opts = opts or Options()
+        self._lock = threading.Lock()
+        self._turns: list = []
+
+    def process_turn(self, role: str, content: str) -> Result:
+        with self._lock:
+            r = role.strip().lower()
+            if r in ("assistant", "model"):
+                res = process(content, self._opts)
+            else:
+                res = _conservative_clean(content)
+            self._turns.append(TurnRecord(
+                index=len(self._turns), role=r,
+                input_len=len(content), output_len=len(res.output),
+                cleaned=res.cleaned, actions=len(res.repairs),
+                error=res.error is not None,
+            ))
+            return res
+
+    def turns(self):
+        return list(self._turns)
+
+
+def _conservative_clean(content: str) -> Result:
+    if content == "":
+        return Result()
+    acts: list = []
+    out = normalize_output(content, acts)
+    if not out.strip() and content.strip():
+        return Result(output=content, cleaned=False, repairs=acts,
+                      confidence=0.0,
+                      error="unable to repair input into a valid target format")
+    return Result(output=out, cleaned=out != content, repairs=acts,
+                  confidence=0.0)
+
+
 def fix(inp: str, opts: Options | None = None) -> str:
     """One-liner: always returns a usable string (original on failure)."""
     return process(inp, opts).output

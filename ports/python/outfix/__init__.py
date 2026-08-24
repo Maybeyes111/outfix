@@ -9,11 +9,13 @@ from .core import (
     OutfixRepairFailed,
     RepairAction,
     Result,
+    Session,
+    TurnRecord,
     fix,
     process,
 )
 
 __all__ = ["Options", "OutfixRepairFailed", "RepairAction", "Result",
-           "fix", "process"]
+           "Session", "TurnRecord", "fix", "process"]
 
 __version__ = "0.3.0"

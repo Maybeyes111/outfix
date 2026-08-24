@@ -278,6 +278,32 @@ answers without touching surrounding content.
 
 ---
 
+## Multi-turn agent loops (harnesses like Claude Code, opencode, Hermes)
+
+Harnesses are **multi-turn**: assistant output gets appended to context and the
+next turn imitates whatever it saw. Three rules keep that safe:
+
+1. **Clean at the boundary** — run each *assistant* message through outfix
+   **before** you parse its tool calls and **before** it enters history.
+2. **Never rewrite history retroactively** — user/tool/system messages only
+   get conservative normalization (escapes, CRLF, whitespace), because a user
+   literally asking *"what does `<think>` mean?"* must not be mangled.
+3. **Feed the cleaned text forward** — later turns then imitate clean output,
+   not pollution.
+
+The role-aware `Session` API does exactly this:
+
+```go
+sess := outfix.NewSession(outfix.Options{StripReasoning: true, RepairJSON: true})
+res, _ := sess.ProcessTurn("assistant", rawModelOutput) // full pipeline
+_,   _ = sess.ProcessTurn("user", userText)             // pass-through safe
+for _, t := range sess.Turns() { /* audit trail */ }
+```
+
+Same API exists in the Python (`Session.process_turn`) and JavaScript
+(`Session.processTurn`) ports. See `examples/multi-turn` for a runnable
+mini-harness with realistic model reasoning.
+
 ## License
 
 [MIT](LICENSE)

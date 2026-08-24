@@ -156,6 +156,24 @@ class SpecCases(unittest.TestCase):
         self.assertEqual(arr[0]["name"], "book_hotel")
         self.assertEqual(arr[1]["name"], "get_weather")
 
+    def test_session_roles(self):
+        import outfix as pkg
+        s = pkg.Session()
+        r1 = s.process_turn("user", "apa itu <think> tag? jawab singkat")
+        self.assertEqual(r1.output, "apa itu <think> tag? jawab singkat")
+        r2 = s.process_turn(
+            "assistant",
+            "<think>\nThe user wants a one-liner about the think tag, so I "
+            "will keep it plain.\n</think>\nIt marks hidden reasoning.")
+        self.assertNotIn("<think>", r2.output)
+        self.assertIn("hidden reasoning", r2.output)
+        r3 = s.process_turn("tool", '{"a":1}\r\n')
+        self.assertEqual(r3.output, '{"a":1}')
+        self.assertEqual(len(s.turns()), 3)
+        self.assertTrue(s.turns()[1].cleaned)
+
+
+
 
 class LiveCorpus(unittest.TestCase):
     def test_corpus(self):

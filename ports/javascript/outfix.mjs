@@ -1207,4 +1207,60 @@ export function fix(input, opts) {
   return process(input, opts).output;
 }
 
-export default { fix, process, Options, Result, RepairAction, Format, ModelFamily, ACTION };
+export class TurnRecord {
+  constructor(o) {
+    this.index = o.index;
+    this.role = o.role;
+    this.inputLen = o.inputLen;
+    this.outputLen = o.outputLen;
+    this.cleaned = o.cleaned;
+    this.actions = o.actions;
+    this.error = o.error;
+  }
+}
+
+function conservativeClean(content) {
+  if (!content) return new Result();
+  const acts = [];
+  const out = normalizeOutput(content, acts);
+  if (!out.trim() && content.trim()) {
+    return new Result({
+      output: content, repairs: acts, confidence: 0,
+      error: "unable to repair input into a valid target format",
+    });
+  }
+  return new Result({ output: out, cleaned: out !== content, repairs: acts });
+}
+
+export class Session {
+  constructor(opts = new Options()) {
+    this.opts = opts instanceof Options ? opts : new Options(opts);
+    this._turns = [];
+  }
+
+  processTurn(role, content) {
+    let res;
+    const r = String(role).trim().toLowerCase();
+    if (r === "assistant" || r === "model") {
+      res = process(content, this.opts);
+    } else {
+      res = conservativeClean(content);
+    }
+    this._turns.push(new TurnRecord({
+      index: this._turns.length,
+      role: r,
+      inputLen: content.length,
+      outputLen: res.output.length,
+      cleaned: res.cleaned,
+      actions: res.repairs.length,
+      error: res.error !== null,
+    }));
+    return res;
+  }
+
+  turns() {
+    return [...this._turns];
+  }
+}
+
+export default { fix, process, Options, Result, RepairAction, Format, ModelFamily, ACTION, Session };

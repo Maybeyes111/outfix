@@ -614,6 +614,51 @@ func TestAggressiveParamFixes(t *testing.T) {
 	}
 }
 
+func TestSessionRoles(t *testing.T) {
+	s := NewSession(defaultFixOptions())
+
+	r1, err1 := s.ProcessTurn("user", "apa itu <think> tag? jawab singkat")
+	if err1 != nil || r1.Output != "apa itu <think> tag? jawab singkat" {
+		t.Fatalf("user turn must pass through untouched: %q %v", r1.Output, err1)
+	}
+	r2, err2 := s.ProcessTurn("assistant", "<think>\nUser wants a short answer about the think tag, so I will reply in one line without JSON.\n</think>\nIt marks hidden reasoning.")
+	if err2 != nil || strings.Contains(r2.Output, "<think>") || !strings.Contains(r2.Output, "hidden reasoning") {
+		t.Fatalf("assistant turn not cleaned: %q %v", r2.Output, err2)
+	}
+
+	r3, err3 := s.ProcessTurn("tool", "{\"a\":1}\r\n")
+	if err3 != nil {
+		t.Fatalf("tool turn errored: %v", err3)
+	}
+	_ = r3
+
+	turns := s.Turns()
+	if len(turns) != 3 {
+		t.Fatalf("turns=%d", len(turns))
+	}
+	if turns[0].Role != "user" || turns[0].Cleaned {
+		t.Fatalf("turn0=%+v", turns[0])
+	}
+	if !turns[1].Cleaned || !turns[2].Cleaned {
+		t.Fatalf("expected cleaned flags on assistant/tool turns: %+v", turns)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := s.ProcessTurn("assistant", `{"x": 1}`); err != nil {
+				t.Errorf("concurrent turn: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if len(s.Turns()) != 11 {
+		t.Fatalf("concurrent turns lost: %d", len(s.Turns()))
+	}
+}
+
 func TestRealToolLoopCorpus(t *testing.T) {
 	cases := []struct{ file, want string }{
 		{"object-arg.txt", `{"name":"get_weather","arguments":{"units": "imperial", "days": 30, "city": "Tokyo"}}`},
