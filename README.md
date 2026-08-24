@@ -304,6 +304,10 @@ Same API exists in the Python (`Session.process_turn`) and JavaScript
 (`Session.processTurn`) ports. See `examples/multi-turn` for a runnable
 mini-harness with realistic model reasoning.
 
+Ready-made recipes for popular harnesses — opencode (custom provider),
+Claude Code (PostToolUse hook script), Hermes Agent (provider swap) — are in
+[INTEGRATIONS.md](INTEGRATIONS.md), each checked against upstream docs.
+
 ## License
 
 [MIT](LICENSE)
