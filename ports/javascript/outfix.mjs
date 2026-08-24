@@ -35,7 +35,7 @@ export const ModelFamily = { GENERIC: 0, QWEN: 1, DEEPSEEK: 2, GLM: 3 };
 const THINK_RE = /<\s*\/?\s*(thinking|reflection|reasoning|think)\s*>/gi;
 const TOOLWRAP_RE = /<\s*\/?\s*(tool_call|tool_calls|function_call|function_calls)\s*>/gi;
 const CHATTEMPLATE_RE = /<\|[a-zA-Z_]+\|>/g;
-const FUNCCALL_FULL_RE = /^\s*[A-Za-z_]\w*(?:\.\w+)*\s*\((?s:[\S\s]*)\)\s*$/;
+const FUNCCALL_FULL_RE = /^\s*[A-Za-z_]\w*(?:\.\w+)*\s*\((?:[\S\s]*)\)\s*$/;
 const FUNCCALL_ARGS_RE = /[A-Za-z_]\w*(?:\.\w+)*\s*\(/;
 const WITH_LINES_RE = /^[A-Za-z_]\w*[ \t]+with[ \t]+[A-Za-z_][\w-]*[ \t]*=/m;
 const FUNCCALL_DENYLIST = new Set(["def", "print", "len", "range", "int", "str",
