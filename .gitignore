@@ -6,3 +6,6 @@ cpu.out
 *.md.utf8
 _project_utf8.md
 New Text Document.txt
+__pycache__/
+*.pyc
+node_modules/
