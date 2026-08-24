@@ -5,11 +5,20 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
 func jsonRepair(src string, depth int, acts *[]RepairAction) string {
 	s := src
+	if depth >= 3 && strings.Contains(s, `"{`) {
+		if v, pos, found := unwrapStringifiedJSON(s); found {
+			s = v
+			addAct(acts, ActionUnwrappedStringified,
+				fmt.Sprintf("inlined stringified JSON at %d", pos), pos)
+		}
+	}
 	if json.Valid([]byte(s)) {
 		return s
 	}
@@ -74,6 +83,21 @@ func jsonRepair(src string, depth int, acts *[]RepairAction) string {
 			s = v
 			addAct(acts, ActionRepairedTruncatedJSON,
 				fmt.Sprintf("closed truncated structure near %d", pos), pos)
+		}
+		if depth >= 3 {
+			if v, pos, found := quoteBareValues(s); found {
+				s = v
+				addAct(acts, ActionQuotedBareValues,
+					fmt.Sprintf("quoted bare value(s) starting at %d", pos), pos)
+				if json.Valid([]byte(s)) {
+					return s
+				}
+			}
+			if v, pos, found := unwrapStringifiedJSON(s); found {
+				s = v
+				addAct(acts, ActionUnwrappedStringified,
+					fmt.Sprintf("inlined stringified JSON at %d", pos), pos)
+			}
 		}
 	}
 
@@ -461,6 +485,363 @@ func completePartialLiteral(t string) (string, int, bool) {
 		return "null", k, true
 	}
 	return "", -1, false
+}
+
+var funcCallDenylist = map[string]bool{
+	"def": true, "print": true, "len": true, "range": true, "int": true,
+	"str": true, "float": true, "bool": true, "list": true, "dict": true,
+	"set": true, "tuple": true, "open": true, "input": true, "type": true,
+	"super": true, "isinstance": true, "getattr": true, "setattr": true,
+	"if": true, "for": true, "while": true, "return": true, "lambda": true,
+	"func": true, "return0": true,
+}
+
+func tryConvertFunctionCall(s string, acts *[]RepairAction) (string, bool) {
+	t := strings.TrimSpace(s)
+	if !funcCallFullRe.MatchString(t) {
+		return s, false
+	}
+	open := strings.IndexByte(t, '(')
+	name := strings.TrimSpace(t[:open])
+	if funcCallDenylist[strings.ToLower(name)] {
+		return s, false
+	}
+	close := strings.LastIndexByte(t, ')')
+	argsBody := t[open+1 : close]
+
+	var segs []string
+	depth := 0
+	inDQ, inSQ := false, false
+	segStart := 0
+	for i := 0; i < len(argsBody); i++ {
+		c := argsBody[i]
+		switch {
+		case inDQ:
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				inDQ = false
+			}
+		case inSQ:
+			if c == '\\' {
+				i++
+			} else if c == '\'' {
+				inSQ = false
+			}
+		case c == '"':
+			inDQ = true
+		case c == '\'':
+			inSQ = true
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			depth--
+		case c == ',' && depth == 0:
+			segs = append(segs, argsBody[segStart:i])
+			segStart = i + 1
+		}
+	}
+	if strings.TrimSpace(argsBody[segStart:]) != "" {
+		segs = append(segs, argsBody[segStart:])
+	}
+
+	var b strings.Builder
+	b.WriteString(`{"name":`)
+	b.Write(mustJSONString(name))
+	b.WriteString(`,"arguments":{`)
+	wrote := 0
+	for _, seg := range segs {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		eq := top_level_eq_index(seg)
+		if eq < 0 {
+			return s, false
+		}
+		key := strings.TrimSpace(seg[:eq])
+		key = strings.Trim(key, `"'`)
+		if key == "" || !validIdent(key) {
+			return s, false
+		}
+		val := strings.TrimSpace(seg[eq+1:])
+		jv, ok := convertArgValue(val)
+		if !ok {
+			return s, false
+		}
+		if wrote > 0 {
+			b.WriteByte(',')
+		}
+		b.Write(mustJSONString(key))
+		b.WriteByte(':')
+		b.WriteString(jv)
+		wrote++
+	}
+	b.WriteString("}}")
+	out := b.String()
+	if !json.Valid([]byte(out)) {
+		return s, false
+	}
+	addAct(acts, ActionConvertedFunctionCall,
+		fmt.Sprintf("converted function call %s(...) to tool-call JSON", name), 0)
+	return out, true
+}
+
+func top_level_eq_index(seg string) int {
+	depth := 0
+	inDQ, inSQ := false, false
+	for i := 0; i < len(seg); i++ {
+		c := seg[i]
+		switch {
+		case inDQ:
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				inDQ = false
+			}
+		case inSQ:
+			if c == '\\' {
+				i++
+			} else if c == '\'' {
+				inSQ = false
+			}
+		case c == '"':
+			inDQ = true
+		case c == '\'':
+			inSQ = true
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			depth--
+		case c == '=' && depth == 0:
+			if i+1 < len(seg) && seg[i+1] == '=' {
+				return -1
+			}
+			return i
+		}
+	}
+	return -1
+}
+
+func validIdent(k string) bool {
+	if k == "" {
+		return false
+	}
+	for i := 0; i < len(k); i++ {
+		c := k[i]
+		if !(isASCIILetter(c) || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return false
+		}
+		if i == 0 && (c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func mustJSONString(s string) []byte {
+	b, _ := json.Marshal(s)
+	return b
+}
+
+func convertArgValue(val string) (string, bool) {
+	if val == "" {
+		return "", false
+	}
+	switch val[0] {
+	case '"':
+		unq, err := strconv.Unquote(val)
+		if err != nil {
+			return marshalIfValidJSON(val)
+		}
+		return string(mustJSONString(unq)), true
+	case '\'':
+		if len(val) >= 2 && val[len(val)-1] == '\'' {
+			inner := val[1 : len(val)-1]
+			inner = strings.ReplaceAll(inner, `\'`, `'`)
+			return string(mustJSONString(inner)), true
+		}
+		return "", false
+	case '{', '[':
+		return marshalIfValidJSON(val)
+	}
+	switch val {
+	case "true", "True":
+		return "true", true
+	case "false", "False":
+		return "false", true
+	case "null", "None":
+		return "null", true
+	}
+	if isNumericLiteral(val) {
+		return val, true
+	}
+	if validIdent(val) {
+		return string(mustJSONString(val)), true
+	}
+	return "", false
+}
+
+func marshalIfValidJSON(v string) (string, bool) {
+	if json.Valid([]byte(v)) {
+		return v, true
+	}
+	return "", false
+}
+
+func isNumericLiteral(v string) bool {
+	if v == "" {
+		return false
+	}
+	i := 0
+	if v[0] == '-' {
+		i = 1
+	}
+	digits, dot := 0, false
+	for ; i < len(v); i++ {
+		c := v[i]
+		if c >= '0' && c <= '9' {
+			digits++
+		} else if c == '.' && !dot {
+			dot = true
+		} else {
+			return false
+		}
+	}
+	return digits > 0
+}
+
+func quoteBareValues(s string) (string, int, bool) {
+	mask := buildStringMask(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	firstPos := -1
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if mask[i] || c != ':' {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		b.WriteByte(c)
+		j := nextNonWS(s, i+1)
+		if j < 0 || !isASCIILetter(s[j]) {
+			i++
+			continue
+		}
+		k := j
+		for k < len(s) && !mask[k] && s[k] != ',' && s[k] != '}' && s[k] != ']' && s[k] != '\n' {
+			k++
+		}
+		valEnd := k
+		for valEnd > j && (s[valEnd-1] == ' ' || s[valEnd-1] == '\t') {
+			valEnd--
+		}
+		run := s[j:valEnd]
+		if run == "" || isNumericLiteral(run) || run == "true" || run == "false" ||
+			run == "null" || run == "True" || run == "False" || run == "None" {
+			i++
+			continue
+		}
+		b.WriteString(s[i+1 : j])
+		b.WriteString(strconv.Quote(run))
+		if firstPos < 0 {
+			firstPos = j
+		}
+		i = valEnd
+	}
+	if firstPos < 0 {
+		return s, -1, false
+	}
+	return b.String(), firstPos, true
+}
+
+func unwrapStringifiedJSON(s string) (string, int, bool) {
+	re := regexp.MustCompile(`(?s)"(\{(?:(?:[^"\\]|\\.)*)\})"|"(\[(?:(?:[^"\\]|\\.)*?)\])"`)
+	firstPos := -1
+	out := re.ReplaceAllStringFunc(s, func(tok string) string {
+		unq, err := strconv.Unquote(tok)
+		if err != nil {
+			return tok
+		}
+		trimmed := strings.TrimSpace(unq)
+		if len(trimmed) < 2 || (trimmed[0] != '{' && trimmed[0] != '[') {
+			return tok
+		}
+		if !json.Valid([]byte(trimmed)) {
+			return tok
+		}
+		if firstPos < 0 {
+			firstPos = strings.Index(s, tok)
+		}
+		return trimmed
+	})
+	if firstPos < 0 || out == s || !json.Valid([]byte(out)) {
+		return s, -1, false
+	}
+	return out, firstPos, true
+}
+
+func extractSingleCallFromText(s string, acts *[]RepairAction) string {
+	t := strings.TrimSpace(s)
+	loc := funcCallArgsRe.FindStringIndex(t)
+	if loc == nil {
+		return s
+	}
+	start := loc[0]
+	absOpen := start + strings.IndexByte(t[start:], '(')
+	depth := 0
+	inDQ, inSQ := false, false
+	end := -1
+scan:
+	for i := absOpen; i < len(t); i++ {
+		c := t[i]
+		switch {
+		case inDQ:
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				inDQ = false
+			}
+		case inSQ:
+			if c == '\\' {
+				i++
+			} else if c == '\'' {
+				inSQ = false
+			}
+		case c == '"':
+			inDQ = true
+		case c == '\'':
+			inSQ = true
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			depth--
+			if depth == 0 && c == ')' {
+				end = i + 1
+				break scan
+			}
+		}
+	}
+	if end < 0 {
+		return s
+	}
+	candidate := t[start:end]
+	callName := strings.TrimSpace(t[start:absOpen])
+	argsBody := candidate[absOpen-start+1 : len(candidate)-1]
+	if funcCallDenylist[strings.ToLower(callName)] || top_level_eq_index(argsBody) < 0 {
+		return s
+	}
+	conv, ok := tryConvertFunctionCall(candidate, acts)
+	if !ok {
+		return s
+	}
+	if start > 0 && hasLetter(t[:start]) {
+		addAct(acts, ActionRemovedPreamble,
+			fmt.Sprintf("removed prose before extracted function call (%d bytes)", start), 0)
+	}
+	return conv
 }
 
 func xmlRepair(src string, acts *[]RepairAction) string {

@@ -2,12 +2,16 @@ package outfix
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 )
 
 type artifactReport struct {
 	hasOpenThink     bool
 	hasCloseThink    bool
+	hasFuncCall      bool
+	hasLooseCall     bool
+	hasStringified   bool
 	hasToolWrapper   bool
 	hasTemplateBleed bool
 	hasCodeFence     bool
@@ -26,6 +30,10 @@ type artifactReport struct {
 
 var unicodeEscNeedles = []string{`\u003c`, `\u003e`, `\u0026`, `\u003C`, `\u003E`, `\u0026`}
 
+var funcCallFullRe = regexp.MustCompile(`^\s*[A-Za-z_]\w*(?:\.\w+)*\s*\((?s:.*)\)\s*$`)
+
+var funcCallArgsRe = regexp.MustCompile(`[A-Za-z_]\w*(?:\.\w+)*\s*\(`)
+
 func detect(raw string) artifactReport {
 	var rep artifactReport
 	if raw == "" {
@@ -34,6 +42,10 @@ func detect(raw string) artifactReport {
 	lower := strings.ToLower(raw)
 	rep.hasOpenThink = containsAny(lower, "<think", "<reasoning", "<reflection")
 	rep.hasCloseThink = containsAny(lower, "</think", "</reasoning", "</reflection")
+	rep.hasFuncCall = funcCallFullRe.MatchString(strings.TrimSpace(raw))
+	hasLoose := funcCallArgsRe.MatchString(raw)
+	rep.hasLooseCall = hasLoose && !rep.hasFuncCall
+	rep.hasStringified = strings.Contains(raw, `"{`)
 	rep.hasToolWrapper = containsAny(lower, "<tool_call", "</tool_call", "<function_call", "</function_call")
 	rep.hasTemplateBleed = strings.Contains(lower, "<|")
 	rep.hasCodeFence = strings.Contains(raw, "```") || strings.Contains(raw, "~~~")
@@ -57,6 +69,9 @@ func detect(raw string) artifactReport {
 	xmlStart := firstXMLTagIndex(raw)
 
 	switch {
+	case rep.hasFuncCall:
+		rep.jsonIntent = false
+		rep.xmlIntent = false
 	case jsonStart >= 0 && (xmlStart < 0 || jsonStart < xmlStart):
 		rep.jsonIntent = true
 		rep.malformedJSON = !rep.validJSON

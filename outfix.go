@@ -64,7 +64,7 @@ func (p *Processor) Process(input string) (res Result, err error) {
 	jsonShape := j >= 0 && (x < 0 || j < x)
 	xmlOpenShape := x >= 0 && (j < 0 || x < j) &&
 		(isASCIILetter(out[x+1]) || out[x+1] == '?' || out[x+1] == '!')
-	structured := jsonShape || xmlOpenShape
+	structured := (jsonShape || xmlOpenShape) && !rep.hasFuncCall
 
 	if p.opts.TargetFormat != FormatPlainText && structured {
 		out = st.stripPreamble(out)
@@ -77,6 +77,11 @@ func (p *Processor) Process(input string) (res Result, err error) {
 			out = xmlRepair(out, &acts)
 		}
 	} else {
+		if conv, ok := tryConvertFunctionCall(out, &acts); ok {
+			out = conv
+		} else if funcCallArgsRe.MatchString(strings.TrimSpace(out)) {
+			out = extractSingleCallFromText(out, &acts)
+		}
 		out = stripOrphanCloseTags(out, &acts)
 	}
 
@@ -141,8 +146,8 @@ func (p *Processor) fastPath(rep artifactReport, input string) bool {
 			return false
 		}
 	}
-	if rep.hasOpenThink || rep.hasCloseThink || rep.hasToolWrapper || rep.hasTemplateBleed ||
-		rep.hasCodeFence || rep.hasBoxDrawing ||
+	if rep.hasOpenThink || rep.hasCloseThink || rep.hasFuncCall || rep.hasLooseCall || rep.hasStringified ||
+		rep.hasToolWrapper || rep.hasTemplateBleed || rep.hasCodeFence || rep.hasBoxDrawing ||
 		rep.hasPreamble || rep.hasTail || rep.malformedJSON || rep.hasUnicodeEsc || rep.hasCR {
 		return false
 	}

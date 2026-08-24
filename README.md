@@ -42,6 +42,51 @@ real-world failing samples are the single most valuable contribution right now.
 
 ---
 
+## Universal: use it from anywhere
+
+| Language | How | Status |
+|---|---|---|
+| **Go** | `go get github.com/Maybeyes111/outfix` | reference implementation |
+| **Python** | `pip install` from `ports/python/` (or copy the package) | ported, 25 tests pass |
+| **JavaScript / Node** | `ports/javascript/outfix.mjs` (ESM, zero deps) | ported, 25 tests pass |
+| **Any language (C ABI)** | `go build -buildmode=c-shared -o outfix.so ./capi` | planned |
+| **Browser / WASM** | `GOOS=js GOARCH=wasm go build -o outfix.wasm .` | core builds clean |
+
+The Python and JavaScript ports are line-for-line ports of the Go pipeline and
+are validated against the same live-model corpus (`testdata/live/`). Action
+type strings are identical across languages, so audit trails match.
+
+## Cleaning proxy for chat gateways (Hermes Agent, Telegram bots)
+
+Chat gateways like [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+(Telegram/Discord messaging gateway) speak the OpenAI-compatible protocol.
+Instead of patching every bot, run **outfix-proxy** between your gateway and
+any OpenAI-compatible provider — every assistant message gets cleaned before
+it reaches the chat:
+
+```bash
+go install github.com/Maybeyes111/outfix/cmd/outfix-proxy@latest
+
+# sit between Hermes and your router/provider
+outfix-proxy -listen :8643 \
+             -upstream http://localhost:20128/v1 \
+             -model deepseek -verbose
+```
+
+Then point your gateway's provider at the proxy instead of the upstream:
+
+```yaml
+# ~/.hermes/config.yaml (Hermes Agent)
+providers:
+  custom:
+    base_url: http://127.0.0.1:8643/v1
+    api_key_env: ROUTER_API_KEY
+```
+
+Telegram users now see `{"result": 42}` instead of
+`</think>Sure!\n```json\n{"result": 42}`. Non-streaming JSON responses are
+cleaned; streaming (SSE) responses pass through untouched for now.
+
 ## Install
 
 ```bash
@@ -127,6 +172,9 @@ json.Unmarshal([]byte(res.Output), &v)
 | Bare keys | `{name: "x"}` | `quoted_bare_keys` |
 | Truncated JSON | `{"items": [1, 2` | `repaired_truncated_json` |
 | NDJSON | two objects on two lines | `merged_ndjson` |
+| Function-call written as code | `get_weather(city="X")` instead of a tool call | `converted_function_call` |
+| Wrong param types | `{city: Jakarta}` bare values | `quoted_bare_values` (depth 3) |
+| Stringified JSON args | `"arguments": "{...}"` as string | `unwrapped_stringified_json` (depth 3) |
 | Unicode escapes | `\u003c` → `<` | `normalized_unicode_escapes` |
 | CRLF / excess whitespace | `\r\n`, blank-line runs | `normalized_line_endings` |
 

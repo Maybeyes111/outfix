@@ -541,6 +541,79 @@ func TestConcurrentUse(t *testing.T) {
 	wg.Wait()
 }
 
+func TestFunctionCallConversion(t *testing.T) {
+	cleanedTrue := true
+	cases := []tc{
+		{
+			name:    "full python-style call",
+			input:   `get_weather(city="Jakarta", units='metric', days=3, verbose=True)`,
+			want:    `{"name":"get_weather","arguments":{"city":"Jakarta","units":"metric","days":3,"verbose":true}}`,
+			cleaned: &cleanedTrue,
+			actions: []string{ActionConvertedFunctionCall},
+			confOne: true,
+		},
+		{
+			name:    "empty args",
+			input:   `list_tools()`,
+			want:    `{"name":"list_tools","arguments":{}}`,
+			actions: []string{ActionConvertedFunctionCall},
+			confOne: true,
+		},
+		{
+			name:    "bare word value becomes string",
+			input:   `send_message(to=budi, text="halo")`,
+			want:    `{"name":"send_message","arguments":{"to":"budi","text":"halo"}}`,
+			actions: []string{ActionConvertedFunctionCall},
+			confOne: true,
+		},
+		{
+			name:    "none and false literals",
+			input:   `search(q="x", cache=None, strict=False)`,
+			want:    `{"name":"search","arguments":{"q":"x","cache":null,"strict":false}}`,
+			actions: []string{ActionConvertedFunctionCall},
+			confOne: true,
+		},
+		{
+			name:    "nested dict arg survives",
+			input:   `create(filter={"status": "open"}, limit=5)`,
+			want:    `{"name":"create","arguments":{"filter":{"status": "open"},"limit":5}}`,
+			actions: []string{ActionConvertedFunctionCall},
+			confOne: true,
+		},
+	}
+	runTable(t, defaultProc(), cases)
+
+	res, err := defaultProc().Process("Sure! Here is the call:\nget_weather(city=\"Jakarta\")")
+	if err != nil || !strings.HasPrefix(res.Output, "{\"name\":\"get_weather\"") {
+		t.Fatalf("call inside prose: out=%q err=%v repairs=%+v", res.Output, err, res.Repairs)
+	}
+}
+
+func TestAggressiveParamFixes(t *testing.T) {
+	out, err := New(Options{MaxRepairDepth: 3, RepairJSON: true}).Process(`{"city": Jakarta, "zip": 12345}`)
+	if err != nil || out.Output != `{"city": "Jakarta", "zip": 12345}` {
+		t.Fatalf("bare values depth3: %q err=%v", out.Output, err)
+	}
+	res2, err2 := New(Options{MaxRepairDepth: 2, RepairJSON: true}).Process(`{"city": Jakarta}`)
+	if err2 == nil && json.Valid([]byte(res2.Output)) && strings.Contains(res2.Output, `"Jakarta"`) {
+		t.Fatalf("depth2 must not quote bare values, got %q", res2.Output)
+	}
+
+	out3, err3 := New(Options{MaxRepairDepth: 3, RepairJSON: true}).
+		Process(`{"arguments": "{\"city\": \"Jakarta\"}", "n": 1}`)
+	if err3 != nil {
+		t.Fatalf("stringified unwrap errored: %v", err3)
+	}
+	var parsed struct {
+		Arguments map[string]string `json:"arguments"`
+		N         int               `json:"n"`
+	}
+	if e := json.Unmarshal([]byte(out3.Output), &parsed); e != nil ||
+		parsed.Arguments["city"] != "Jakarta" || parsed.N != 1 {
+		t.Fatalf("stringified unwrap got %q", out3.Output)
+	}
+}
+
 func TestLiteralEscapeNDJSON(t *testing.T) {
 	literalSep := `\` + "n"
 	in := `{"name": "Alice", "id": 1}` + literalSep + `{"name": "Bob", "id": 2}` + literalSep + `{"name": "Charlie", "id": 3}`

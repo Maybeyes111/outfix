@@ -1,0 +1,24 @@
+{
+  "name": "outfix",
+  "version": "0.3.0",
+  "description": "Clean malformed/polluted LLM output (think blocks, tool-call wrappers, fences, preamble/postamble, truncated JSON) before it hits your parser",
+  "type": "module",
+  "main": "outfix.mjs",
+  "types": "outfix.d.mts",
+  "exports": {
+    ".": "./outfix.mjs"
+  },
+  "files": ["outfix.mjs", "outfix.d.mts", "README.md"],
+  "keywords": ["llm", "json-repair", "qwen", "deepseek", "data-cleaning"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Maybeyes111/outfix.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test.mjs"
+  }
+}
