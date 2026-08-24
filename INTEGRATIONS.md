@@ -41,6 +41,69 @@ opencode documents custom OpenAI-compatible providers via
 
 ---
 
+## opencode (custom provider) — VERIFIED END-TO-END ✅
+
+Tested live with opencode 1.18.21 on Windows: a full `opencode run` turn
+completed through outfix-proxy against a custom provider.
+
+Three things must be right (miss one and you get misleading errors like
+`No active credentials for provider: openai`):
+
+1. **Provider config** (`opencode.json`, project-level):
+
+   ```json
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "model": "outfix/<upstream-model-id>",
+     "provider": {
+       "outfix": {
+         "npm": "@ai-sdk/openai-compatible",
+         "name": "Outfix Cleaned",
+         "options": {
+           "baseURL": "http://127.0.0.1:8643/v1",
+           "apiKey": "any-non-empty-string"
+         },
+         "models": {
+           "<upstream-model-id>": {
+             "name": "DeepSeek V4 Flash (outfix-cleaned)",
+             "modalities": { "input": ["text"], "output": ["text"] },
+             "tool_call": true
+           }
+         }
+       }
+     }
+   }
+   ```
+
+   The `models` keys must match the IDs your upstream serves (`GET /v1/models`
+   through the proxy).
+
+2. **auth.json entry keyed by the provider id.** opencode checks its own
+   credential store *before* trusting `options.apiKey` for npm providers:
+
+   ```
+   # Windows: %USERPROFILE%\.local\share\opencode\auth.json
+   # Linux/macOS: ~/.local/share/opencode/auth.json
+   { "outfix": { "type": "api", "key": "any-non-empty-string" } }
+   ```
+
+   Note: on Windows, `XDG_DATA_HOME` is ignored for this file — always use the
+   profile path above.
+
+3. **Provide an explicit session title** when scripting headless runs
+   (`opencode run --title x ...`) so the built-in title generator does not
+   call a different provider.
+
+Verified behavior matrix from that live test:
+
+| Path | Result |
+|---|---|
+| Non-streaming request → proxy → upstream | response body cleaned ✅ (curl-proven side-by-side) |
+| Streaming request (`stream:true`) → proxy | passes through **uncleaned** ⚠️ (matches documented limitation; observed live) |
+| Proxy down / wrong port | opencode surfaces `Bad Gateway: read upstream` from outfix-proxy (causality proven) |
+
+### Original reference config
+
 ## Claude Code (hooks)
 
 Claude Code exposes lifecycle hooks configured in `.claude/settings.json`
