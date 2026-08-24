@@ -9,3 +9,4 @@ New Text Document.txt
 __pycache__/
 *.pyc
 node_modules/
+PROJECT.MD
