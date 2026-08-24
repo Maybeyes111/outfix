@@ -94,13 +94,20 @@ Three things must be right (miss one and you get misleading errors like
    (`opencode run --title x ...`) so the built-in title generator does not
    call a different provider.
 
-Verified behavior matrix from that live test:
+Verified behavior matrix from that live test (updated after the streaming
+cleaner landed in v0.7.0):
 
 | Path | Result |
 |---|---|
 | Non-streaming request → proxy → upstream | response body cleaned ✅ (curl-proven side-by-side) |
-| Streaming request (`stream:true`) → proxy | passes through **uncleaned** ⚠️ (matches documented limitation; observed live) |
+| Streaming request (`stream:true`) → proxy | buffered & flushed clean at `finish_reason` ✅ — live-verified: opencode rendered `{"active": true, "n": null}` from a polluted SSE stream, audit log showed 5 repairs |
 | Proxy down / wrong port | opencode surfaces `Bad Gateway: read upstream` from outfix-proxy (causality proven) |
+
+Streaming design note: deltas are accumulated; cleaning runs once on the full
+payload when `finish_reason` arrives, then a single synthetic content delta +
+terminators are emitted. Streams exceeding `-max-stream-buffer` bytes degrade
+to pass-through mid-stream (memory bound). Use `-stream-mode pass` for
+verbatim piping.
 
 ### Original reference config
 
@@ -185,6 +192,6 @@ welcome.
 
 | Limitation | Status |
 |---|---|
-| Streaming (SSE) responses pass through uncleaned | documented; chunk-aware cleaner is future work |
+| Streaming SSE cleaning | ✅ implemented (buffered flush at finish; `-stream-mode pass` to opt out) |
 | Anthropic Messages API format in outfix-proxy | planned |
 | Rewriting assistant text inside Claude Code sessions | not exposed by upstream; use gateway-level cleaning instead |

@@ -86,8 +86,10 @@ providers:
 ```
 
 Telegram users now see `{"result": 42}` instead of
-`</think>Sure!\n```json\n{"result": 42}`. Non-streaming JSON responses are
-cleaned; streaming (SSE) responses pass through untouched for now.
+`</think>Sure!\n```json\n{"result": 42}`. Both non-streaming JSON **and**
+SSE streaming responses are cleaned — streamed deltas are buffered and
+flushed as one clean payload at `finish_reason` (see `-stream-mode` /
+`-max-stream-buffer`).
 
 ## Install
 

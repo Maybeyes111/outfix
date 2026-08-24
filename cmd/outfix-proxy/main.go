@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -30,10 +31,23 @@ type chatResponse struct {
 }
 
 type proxy struct {
-	upstream *url.URL
-	client   *http.Client
-	hint     outfix.ModelFamily
-	verbose  bool
+	upstream   *url.URL
+	client     *http.Client
+	hint       outfix.ModelFamily
+	verbose    bool
+	streamMode string
+	maxStream  int
+}
+
+func copyHeaders(w http.ResponseWriter, src http.Header) {
+	for k, vs := range src {
+		if strings.EqualFold(k, "Content-Length") {
+			continue
+		}
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
 }
 
 func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -72,25 +86,38 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ct := resp.Header.Get("Content-Type")
 	isJSON := strings.Contains(ct, "application/json")
+	isSSE := strings.Contains(ct, "text/event-stream")
 
-	if !isJSON || resp.StatusCode >= 400 {
+	switch {
+	case isSSE && p.streamMode == "clean":
+		p.serveCleanedSSE(w, resp)
+	case !isJSON || resp.StatusCode >= 400 || (isSSE && p.streamMode == "pass"):
 		copyHeaders(w, resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
-		return
+	default:
+		p.serveCleanedJSON(w, resp, raw{body: nil, header: resp.Header, status: resp.StatusCode})
 	}
+}
 
-	raw, err := io.ReadAll(resp.Body)
+type raw struct {
+	body   []byte
+	header http.Header
+	status int
+}
+
+func (p *proxy) serveCleanedJSON(w http.ResponseWriter, resp *http.Response, _ raw) {
+	rawBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		http.Error(w, "read upstream: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
 	var cr chatResponse
-	if json.Unmarshal(raw, &cr) != nil || len(cr.Choices) == 0 || cr.Error != nil {
+	if json.Unmarshal(rawBody, &cr) != nil || len(cr.Choices) == 0 || cr.Error != nil {
 		copyHeaders(w, resp.Header)
 		w.WriteHeader(resp.StatusCode)
-		w.Write(raw)
+		w.Write(rawBody)
 		return
 	}
 
@@ -118,7 +145,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	out := raw
+	out := rawBody
 	if cleanedAny {
 		if nb, err := json.Marshal(&cr); err == nil {
 			out = nb
@@ -130,15 +157,183 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write(out)
 }
 
-func copyHeaders(w http.ResponseWriter, src http.Header) {
-	for k, vs := range src {
-		if strings.EqualFold(k, "Content-Length") {
+type sseChunk struct {
+	ID      string `json:"id,omitempty"`
+	Object  string `json:"object,omitempty"`
+	Model   string `json:"model,omitempty"`
+	Choices []struct {
+		Index int `json:"index"`
+		Delta struct {
+			Role    string `json:"role,omitempty"`
+			Content string `json:"content,omitempty"`
+		} `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	} `json:"choices"`
+}
+
+func (p *proxy) serveCleanedSSE(w http.ResponseWriter, resp *http.Response) {
+	flusher, canFlush := w.(http.Flusher)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(200)
+	if canFlush {
+		flusher.Flush()
+	}
+
+	emit := func(payload any) bool {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return true
+		}
+		if _, err := io.WriteString(w, "data: "+string(b)+"\n\n"); err != nil {
+			return false
+		}
+		if canFlush {
+			flusher.Flush()
+		}
+		return true
+	}
+
+	var acc strings.Builder
+	overflow := false
+	firstMeta := &sseChunk{}
+	haveMeta := false
+	finish := ""
+
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	doneSeen := false
+
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
-		for _, v := range vs {
-			w.Header().Add(k, v)
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			doneSeen = true
+			break
+		}
+		var ch sseChunk
+		if json.Unmarshal([]byte(data), &ch) != nil || len(ch.Choices) == 0 {
+			if overflow {
+				if _, err := io.WriteString(w, "data: "+data+"\n\n"); err != nil {
+					return
+				}
+				if canFlush {
+					flusher.Flush()
+				}
+			}
+			continue
+		}
+		if !haveMeta {
+			*firstMeta = ch
+			firstMeta.Choices = nil
+			haveMeta = true
+		}
+		c := ch.Choices[0]
+		acc.WriteString(c.Delta.Content)
+		if c.FinishReason != nil && *c.FinishReason != "" {
+			finish = *c.FinishReason
+		}
+		if !overflow && acc.Len() > p.maxStream {
+			overflow = true
+			if p.verbose {
+				log.Printf("[outfix] stream exceeded %d bytes; switching to pass-through", p.maxStream)
+			}
+			io.WriteString(w, "data: "+firstJSONWith(firstMeta, c.Delta.Content)+"\n\n")
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if overflow {
+			if _, err := io.WriteString(w, "data: "+data+"\n\n"); err != nil {
+				return
+			}
+			if canFlush {
+				flusher.Flush()
+			}
 		}
 	}
+
+	if overflow {
+		if finish != "" {
+			fr := finish
+			emit(map[string]any{
+				"id": firstMeta.ID, "object": firstMeta.Object, "model": firstMeta.Model,
+				"choices": []map[string]any{{
+					"index":         0,
+					"delta":         map[string]any{},
+					"finish_reason": fr,
+				}},
+			})
+		}
+		io.WriteString(w, "data: [DONE]\n\n")
+		if canFlush {
+			flusher.Flush()
+		}
+		return
+	}
+
+	opts := outfix.Options{
+		StripReasoning: true,
+		RepairJSON:     true,
+		RepairXML:      true,
+		ModelHint:      p.hint,
+	}
+	res, perr := outfix.New(opts).Process(acc.String())
+	cleaned := res.Output
+	if perr != nil {
+		cleaned = acc.String()
+	}
+	if p.verbose && perr == nil && res.Cleaned {
+		for _, a := range res.Repairs {
+			log.Printf("[outfix][sse] %s: %s", a.Type, a.Description)
+		}
+	}
+
+	if strings.TrimSpace(cleaned) != "" {
+		var content any = cleaned
+		emit(map[string]any{
+			"id": firstMeta.ID, "object": firstMeta.Object, "model": firstMeta.Model,
+			"choices": []map[string]any{{
+				"index":         0,
+				"delta":         map[string]any{"role": "assistant", "content": content},
+				"finish_reason": nil,
+			}},
+		})
+	}
+	fr := finish
+	if fr == "" {
+		fr = "stop"
+	}
+	emit(map[string]any{
+		"id": firstMeta.ID, "object": firstMeta.Object, "model": firstMeta.Model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"delta":         map[string]any{},
+			"finish_reason": fr,
+		}},
+	})
+	io.WriteString(w, "data: [DONE]\n\n")
+	if canFlush {
+		flusher.Flush()
+	}
+	_ = doneSeen
+}
+
+func firstJSONWith(meta *sseChunk, content string) string {
+	b, _ := json.Marshal(map[string]any{
+		"id": meta.ID, "object": meta.Object, "model": meta.Model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"delta":         map[string]any{"role": "assistant", "content": content},
+			"finish_reason": nil,
+		}},
+	})
+	return string(b)
 }
 
 func main() {
@@ -147,6 +342,8 @@ func main() {
 	model := flag.String("model", "generic", "model hint: generic|qwen|deepseek|glm")
 	timeout := flag.Int("timeout", 300, "upstream timeout seconds")
 	verbose := flag.Bool("verbose", false, "log repairs to stderr")
+	streamMode := flag.String("stream-mode", "clean", "streaming behavior: clean (buffer, flush at finish) | pass (verbatim)")
+	maxStream := flag.Int("max-stream-buffer", 65536, "bytes to buffer in clean mode before pass-through fallback")
 	flag.Parse()
 
 	if *upstream == "" {
@@ -168,12 +365,14 @@ func main() {
 	}
 
 	p := &proxy{
-		upstream: u,
-		client:   &http.Client{Timeout: time.Duration(*timeout) * time.Second},
-		hint:     hint,
-		verbose:  *verbose,
+		upstream:   u,
+		client:     &http.Client{Timeout: time.Duration(*timeout) * time.Second},
+		hint:       hint,
+		verbose:    *verbose,
+		streamMode: *streamMode,
+		maxStream:  *maxStream,
 	}
-	log.Printf("outfix-proxy listening on %s -> %s", *listen, u.String())
+	log.Printf("outfix-proxy listening on %s -> %s (stream-mode=%s)", *listen, u.String(), p.streamMode)
 	if err := http.ListenAndServe(*listen, p); err != nil {
 		log.Fatal(err)
 	}
