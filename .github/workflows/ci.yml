@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  go:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        go: ["1.21", "stable"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - name: gofmt check
+        shell: bash
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: go test ./... -count=1
+      - name: race
+        if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable'
+        run: go test -race ./...
+
+  python-port:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: unit tests
+        working-directory: ports/python
+        run: python -m unittest discover -s tests -v
+      - name: parity vs Go corpus
+        run: python ports/python/radical_check.py
+
+  javascript-port:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["18", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: unit tests
+        working-directory: ports/javascript
+        run: node --test test.mjs
+      - name: parity vs Go corpus
+        run: node ports/javascript/radical_check.mjs
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: radical invariants (30k samples)
+        run: go run ./cmd/radical-ai -n 30000 -maxlen 384
+      - name: regenerate cross-language corpus
+        run: go run ./cmd/radical-ai -n 30000 -maxlen 384 -corpus-n 200
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [go, python-port, javascript-port, fuzz]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64, ext: "", suffix: linux-amd64 }
+          - { goos: darwin, goarch: arm64, ext: "", suffix: macos-arm64 }
+          - { goos: windows, goarch: amd64, ext: ".exe", suffix: windows-amd64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: build cli + proxy
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w" -o "dist/outfix-${{ matrix.suffix }}${{ matrix.ext }}" ./cmd/outfix
+          go build -trimpath -ldflags "-s -w" -o "dist/outfix-proxy-${{ matrix.suffix }}${{ matrix.ext }}" ./cmd/outfix-proxy
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: outfix-${{ matrix.suffix }}
+          path: dist/
+      - name: attach to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME" || true
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber

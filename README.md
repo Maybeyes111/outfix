@@ -1,5 +1,7 @@
 # outfix
 
+[![CI](https://github.com/Maybeyes111/outfix/actions/workflows/ci.yml/badge.svg)](https://github.com/Maybeyes111/outfix/actions/workflows/ci.yml)
+
 **Clean malformed / polluted LLM output before it hits your application logic.**
 
 `outfix` is a Go library that repairs the messy things language models —
