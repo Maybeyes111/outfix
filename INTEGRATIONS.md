@@ -161,10 +161,29 @@ exit 0
 ```
 
 Caveat (honest): Claude Code does not expose a supported hook that rewrites
-the *assistant's* text before display/history. For full assistant-side
-cleaning with Claude Code, route it through an OpenAI-compatible gateway
-(like the user's 9router) plus outfix-proxy, or wait for the planned
-Anthropic-format support in outfix-proxy.
+the *assistant's* text before display/history.
+
+**Better path (v0.8.0+): outfix-proxy now speaks the Anthropic Messages
+format too.** Point Claude Code at the proxy and every assistant text block
+is cleaned at the source:
+
+```bash
+outfix-proxy -listen :8643 -upstream https://your-anthropic-compatible-upstream -model deepseek
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8643
+claude
+```
+
+- Non-streaming `/v1/messages`: `content[].text` blocks cleaned in place;
+  `tool_use` / other non-text blocks preserved byte-for-byte (map-preserving
+  re-marshal).
+- Streaming `/v1/messages` SSE: event order and count preserved exactly;
+  accumulated `text_delta` content is cleaned and injected into the first
+  delta, subsequent deltas are emptied (`content_block_stop`,
+  `message_delta`, `message_stop` all intact).
+
+Wire-format verified with mock upstreams covering both shapes plus
+tool_use preservation; full-session proof requires the `claude` CLI, which
+was not available on the test machine — treat that last hop accordingly.
 
 ---
 
@@ -193,5 +212,6 @@ welcome.
 | Limitation | Status |
 |---|---|
 | Streaming SSE cleaning | ✅ implemented (buffered flush at finish; `-stream-mode pass` to opt out) |
-| Anthropic Messages API format in outfix-proxy | planned |
-| Rewriting assistant text inside Claude Code sessions | not exposed by upstream; use gateway-level cleaning instead |
+| Anthropic Messages API format | ✅ implemented v0.8.0 (JSON + SSE, tool_use preserved) |
+| Rewriting assistant text inside Claude Code sessions | solved at gateway level via ANTHROPIC_BASE_URL → outfix-proxy |
+| Streamed deltas beyond -max-stream-buffer degrade to pass-through | memory bound by design |

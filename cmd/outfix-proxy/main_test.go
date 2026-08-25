@@ -141,6 +141,96 @@ func TestProxyPassModeKeepsRaw(t *testing.T) {
 	}
 }
 
+func TestAnthropicJSONClean(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant",
+			"content":[
+				{"type":"text","text":"</think>\nSure! Here is your JSON:\n`+"```json"+`\n{'active': True}\n`+"```"+`\nLet me know!"},
+				{"type":"tool_use","id":"tu_1","name":"get_weather","input":{"city":"Jakarta"}},
+				{"type":"text","text":"clean already"}
+			],
+			"stop_reason":"end_turn"}`)
+	}))
+	defer up.Close()
+	pr := testProxy(t, up.URL)
+	srv := httptest.NewServer(pr)
+	defer srv.Close()
+
+	resp, err := srv.Client().Post(srv.URL+"/v1/messages", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var ar struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+			Name string `json:"name"`
+		} `json:"content"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&ar); err != nil {
+		t.Fatal(err)
+	}
+	if len(ar.Content) != 3 {
+		t.Fatalf("blocks=%d", len(ar.Content))
+	}
+	if strings.Contains(ar.Content[0].Text, "think") || !strings.Contains(ar.Content[0].Text, `{"active": true}`) {
+		t.Fatalf("block0=%q", ar.Content[0].Text)
+	}
+	if ar.Content[1].Type != "tool_use" || ar.Content[1].Name != "get_weather" {
+		t.Fatalf("tool_use mangled: %+v", ar.Content[1])
+	}
+	if ar.Content[2].Text != "clean already" {
+		t.Fatalf("block2=%q", ar.Content[2].Text)
+	}
+}
+
+func TestAnthropicSSEClean(t *testing.T) {
+	events := []string{
+		`{"type":"message_start","message":{"id":"msg_9"}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"<think>deep "}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"reasoning</think>\nAnswer:\n` + "```json" + `\n{\"v\": True}\n` + "```" + `"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+		`{"type":"message_stop"}`,
+	}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, e := range events {
+			io.WriteString(w, "event: x\ndata: "+e+"\n\n")
+		}
+	}))
+	defer up.Close()
+	pr := testProxy(t, up.URL)
+	pr.streamMode = "clean"
+	pr.maxStream = 1 << 16
+	srv := httptest.NewServer(pr)
+	defer srv.Close()
+
+	resp, err := srv.Client().Post(srv.URL+"/v1/messages", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	out := string(body)
+
+	if got := strings.Count(out, "data: "); got != len(events) {
+		t.Fatalf("event count=%d want %d\n%s", got, len(events), out)
+	}
+	if strings.Contains(out, "<think>") || strings.Contains(out, "```") {
+		t.Fatalf("pollution leaked:\n%s", out)
+	}
+	if !strings.Contains(out, `{\"v\": true}`) && !strings.Contains(out, `{"v": true}`) {
+		t.Fatalf("cleaned text missing:\n%s", out)
+	}
+	if !strings.Contains(out, `"stop_reason":"end_turn"`) {
+		t.Fatalf("stop_reason lost:\n%s", out)
+	}
+}
+
 func TestProxyPassesThroughErrors(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

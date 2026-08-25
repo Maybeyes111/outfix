@@ -87,26 +87,185 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ct := resp.Header.Get("Content-Type")
 	isJSON := strings.Contains(ct, "application/json")
 	isSSE := strings.Contains(ct, "text/event-stream")
+	isAnthropic := strings.HasSuffix(r.URL.Path, "/messages")
 
 	switch {
 	case isSSE && p.streamMode == "clean":
-		p.serveCleanedSSE(w, resp)
+		if isAnthropic {
+			p.serveCleanedSSEAnthropic(w, resp)
+		} else {
+			p.serveCleanedSSE(w, resp)
+		}
 	case !isJSON || resp.StatusCode >= 400 || (isSSE && p.streamMode == "pass"):
 		copyHeaders(w, resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 	default:
-		p.serveCleanedJSON(w, resp, raw{body: nil, header: resp.Header, status: resp.StatusCode})
+		if isAnthropic {
+			p.serveCleanedJSONAnthropic(w, resp)
+		} else {
+			p.serveCleanedJSON(w, resp)
+		}
 	}
 }
 
-type raw struct {
-	body   []byte
-	header http.Header
-	status int
+type anthropicResp struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	} `json:"content"`
+	Role    string `json:"role,omitempty"`
+	Model   string `json:"model,omitempty"`
+	StopRsn string `json:"stop_reason,omitempty"`
 }
 
-func (p *proxy) serveCleanedJSON(w http.ResponseWriter, resp *http.Response, _ raw) {
+func cleanTextWith(p *proxy, s string) (string, bool) {
+	opts := outfix.Options{
+		StripReasoning: true,
+		RepairJSON:     true,
+		RepairXML:      true,
+		ModelHint:      p.hint,
+	}
+	res, err := outfix.New(opts).Process(s)
+	if err != nil || !res.Cleaned {
+		return s, false
+	}
+	if p.verbose {
+		for _, a := range res.Repairs {
+			log.Printf("[outfix] %s: %s", a.Type, a.Description)
+		}
+	}
+	return res.Output, true
+}
+
+func (p *proxy) serveCleanedJSONAnthropic(w http.ResponseWriter, resp *http.Response) {
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, "read upstream: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	var top map[string]any
+	if json.Unmarshal(rawBody, &top) != nil {
+		copyHeaders(w, resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		w.Write(rawBody)
+		return
+	}
+	blocks, ok := top["content"].([]any)
+	if !ok || len(blocks) == 0 {
+		copyHeaders(w, resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		w.Write(rawBody)
+		return
+	}
+	cleanedAny := false
+	for _, b := range blocks {
+		m, ok := b.(map[string]any)
+		if !ok || m["type"] != "text" {
+			continue
+		}
+		txt, _ := m["text"].(string)
+		if txt == "" {
+			continue
+		}
+		if v, changed := cleanTextWith(p, txt); changed {
+			m["text"] = v
+			cleanedAny = true
+		}
+	}
+	out := rawBody
+	if cleanedAny {
+		if nb, e := json.Marshal(&top); e == nil {
+			out = nb
+		}
+	}
+	copyHeaders(w, resp.Header)
+	w.Header().Set("Content-Length", fmt.Sprint(len(out)))
+	w.WriteHeader(resp.StatusCode)
+	w.Write(out)
+}
+
+func (p *proxy) serveCleanedSSEAnthropic(w http.ResponseWriter, resp *http.Response) {
+	flusher, canFlush := w.(http.Flusher)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(200)
+	if canFlush {
+		flusher.Flush()
+	}
+
+	var lines []string
+	var acc strings.Builder
+	textSeen := false
+	overflow := false
+
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		lines = append(lines, line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		var evt struct {
+			Type  string `json:"type"`
+			Delta struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"delta"`
+		}
+		if json.Unmarshal([]byte(data), &evt) != nil || evt.Type != "content_block_delta" ||
+			evt.Delta.Type != "text_delta" {
+			continue
+		}
+		textSeen = true
+		acc.WriteString(evt.Delta.Text)
+		if !overflow && acc.Len() > p.maxStream {
+			overflow = true
+			if p.verbose {
+				log.Printf("[outfix][sse-anthropic] exceeded %d bytes; pass-through", p.maxStream)
+			}
+		}
+	}
+	_ = textSeen
+
+	var cleanedFull string
+	injected := false
+	if !overflow {
+		v, _ := cleanTextWith(p, acc.String())
+		cleanedFull = v
+	}
+
+	for _, line := range lines {
+		outLine := line
+		if !overflow && strings.HasPrefix(line, "data:") {
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			var evt map[string]any
+			if json.Unmarshal([]byte(data), &evt) == nil && evt["type"] == "content_block_delta" {
+				if d, ok := evt["delta"].(map[string]any); ok && d["type"] == "text_delta" {
+					if !injected {
+						d["text"] = cleanedFull
+						injected = true
+					} else {
+						d["text"] = ""
+					}
+					if nb, e := json.Marshal(evt); e == nil {
+						outLine = "data: " + string(nb)
+					}
+				}
+			}
+		}
+		if _, err := io.WriteString(w, outLine+"\n\n"); err != nil {
+			return
+		}
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+}
+
+func (p *proxy) serveCleanedJSON(w http.ResponseWriter, resp *http.Response) {
 	rawBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		http.Error(w, "read upstream: "+err.Error(), http.StatusBadGateway)
